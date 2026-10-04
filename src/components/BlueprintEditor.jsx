@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 
-const API_URL_EXPORT = window.API_URL || 'http://localhost:3000';
+const API_URL_EXPORT = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
 export default function BlueprintEditor() {
   const { token } = useAuth();
