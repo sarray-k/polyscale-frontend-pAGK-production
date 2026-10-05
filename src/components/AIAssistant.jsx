@@ -163,6 +163,11 @@ export default function AIAssistant({ context = {} }) {
     const trimmed = message.trim();
     if (!trimmed || loading) return;
 
+    const previousMessages = history
+      .filter((entry) => entry.text !== WELCOME.text)
+      .slice(-10)
+      .map((entry) => ({ role: entry.role, content: entry.text.slice(0, 1500) }));
+
     setLoading(true);
     setMessage('');
     setHistory((prev) => [...prev, { role: 'user', text: trimmed }]);
@@ -177,6 +182,7 @@ export default function AIAssistant({ context = {} }) {
         },
         body: JSON.stringify({
           message: trimmed,
+          history: previousMessages,
           context: { platform: 'PolyScale', ...context }
         })
       });
