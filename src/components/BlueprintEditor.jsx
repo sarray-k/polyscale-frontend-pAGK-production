@@ -462,6 +462,9 @@ export default function BlueprintEditor() {
           >
             {isSuggesting ? 'Recherche…' : 'Suggestions'}
           </button>
+          <button type="button" onClick={toggleHistory} style={styles.aiButtonSecondary}>
+            {historyOpen ? 'Masquer l’historique' : 'Historique'}
+          </button>
         </div>
 
         {historyOpen && (
