@@ -4,6 +4,21 @@ import { useToast } from '../context/ToastContext.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+const BUILD_STAGES = [
+  { from: 0, label: 'Analyse du brief…' },
+  { from: 20, label: 'Rédaction du code…' },
+  { from: 60, label: 'Mise en page et styles…' },
+  { from: 90, label: 'Finalisation…' }
+];
+
+const SKELETON_BLOCKS = [
+  { from: 5, height: 28, label: 'Header' },
+  { from: 20, height: 90, label: 'Hero' },
+  { from: 45, height: 60, label: 'Sections' },
+  { from: 65, height: 60, label: 'Contenu' },
+  { from: 85, height: 28, label: 'Footer' }
+];
+
 const STATUS_MESSAGES = {
   401: 'Session expirée, reconnectez-vous.',
   429: 'Trop de demandes, patientez quelques instants.',
@@ -33,6 +48,8 @@ export default function BlueprintEditor() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [showBuild, setShowBuild] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const abortRef = useRef(null);
@@ -83,7 +100,14 @@ export default function BlueprintEditor() {
   useEffect(() => {
     if (!isGenerating) return undefined;
     setElapsed(0);
-    const timer = setInterval(() => setElapsed((value) => value + 1), 1000);
+    setProgress(0);
+    const expectedMs = aiMultiPage ? 30000 : 15000;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const ms = Date.now() - startedAt;
+      setElapsed(Math.floor(ms / 1000));
+      setProgress(Math.min(95, Math.round(95 * (1 - Math.exp(-ms / expectedMs)))));
+    }, 250);
     return () => clearInterval(timer);
   }, [isGenerating]);
 
@@ -162,6 +186,7 @@ export default function BlueprintEditor() {
     const controller = new AbortController();
     abortRef.current = controller;
     let status;
+    setShowBuild(true);
     setIsGenerating(true);
     try {
       showToast('Génération IA en cours…', 'info');
@@ -188,6 +213,8 @@ export default function BlueprintEditor() {
       }
 
       await fetchFiles();
+      setProgress(100);
+      setTimeout(() => setShowBuild(false), 1200);
       if (historyOpen) fetchHistory();
       if (data.truncated) {
         showToast('⚠️ Réponse tronquée : essayez un brief plus court ou un site mono-page', 'info');
@@ -196,6 +223,7 @@ export default function BlueprintEditor() {
       }
     } catch (error) {
       console.error('Erreur generation IA:', error);
+      setShowBuild(false);
       showToast(`Erreur : ${describeError(error, status)}`, error?.name === 'AbortError' ? 'info' : 'error');
     } finally {
       abortRef.current = null;
@@ -507,7 +535,34 @@ export default function BlueprintEditor() {
         )}
       </div>
 
-      {files.length > 0 && (
+      {showBuild && (
+        <div style={styles.buildPanel}>
+          <div style={styles.buildHead}>
+            <strong>{progress >= 100 ? 'Site prêt ✅' : BUILD_STAGES.filter((stage) => progress >= stage.from).pop().label}</strong>
+            <span>{isGenerating ? progress : 100}%</span>
+          </div>
+          <div style={styles.progressTrack}>
+            <div style={{ ...styles.progressBar, width: `${isGenerating ? progress : 100}%` }} />
+          </div>
+          <div style={styles.skeleton}>
+            {SKELETON_BLOCKS.map((block) => (
+              <div
+                key={block.label}
+                style={{
+                  ...styles.skeletonBlock,
+                  height: block.height,
+                  opacity: progress >= block.from ? 1 : 0.15
+                }}
+              >
+                {block.label}
+              </div>
+            ))}
+          </div>
+          <small style={{ color: '#94a3b8' }}>Progression estimée — l’aperçu réel s’affiche à la fin.</small>
+        </div>
+      )}
+
+      {files.length > 0 && !(showBuild && isGenerating) && (
         <div style={styles.previewPanel}>
           <div style={styles.fileList}>
             {files.map((item) => (
@@ -685,6 +740,12 @@ const styles = {
   aiButtonSecondary: { background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 8, padding: '10px 16px', cursor: 'pointer' },
   suggestionsBox: { display: 'grid', gap: 8 },
   suggestionButton: { display: 'grid', gap: 4, textAlign: 'left', background: '#111827', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 10, padding: 10, cursor: 'pointer' },
+  buildPanel: { marginTop: 20, padding: 14, border: '1px solid #334155', borderRadius: 12, background: '#0f172a', display: 'grid', gap: 10, color: '#e2e8f0' },
+  buildHead: { display: 'flex', justifyContent: 'space-between', fontSize: 14 },
+  progressTrack: { height: 10, borderRadius: 999, background: '#1e293b', overflow: 'hidden' },
+  progressBar: { height: '100%', background: 'linear-gradient(90deg, #14b8a6, #38bdf8)', transition: 'width 0.3s ease' },
+  skeleton: { display: 'grid', gap: 8, padding: 12, borderRadius: 8, background: '#fff1', border: '1px dashed #334155' },
+  skeletonBlock: { display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'rgba(20, 184, 166, 0.15)', color: '#99f6e4', fontSize: 12, transition: 'opacity 0.5s ease' },
   previewPanel: { marginTop: 20, border: '1px solid #334155', borderRadius: 12, overflow: 'hidden', background: '#0f172a' },
   fileList: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10, borderBottom: '1px solid #334155' },
   fileTab: { background: 'transparent', color: '#cbd5e1', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 },
