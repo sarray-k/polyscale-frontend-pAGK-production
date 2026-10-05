@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 
@@ -23,6 +23,8 @@ export default function BlueprintEditor() {
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [activeFileId, setActiveFileId] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [contents, setContents] = useState({});
 
   useEffect(() => {
     if (!token) return;
@@ -31,20 +33,62 @@ export default function BlueprintEditor() {
 
   const fetchFiles = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/code/files`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await fetch(`${API_URL}/api/code/files`, { headers });
       if (!res.ok) return;
-      const files = await res.json();
-      if (files && files.length > 0) {
-        const indexFile = files.find((item) => item.path === 'index.html') || files[0];
-        setActiveFileId(indexFile.id);
-        window.activeFileId = indexFile.id;
+      const list = await res.json();
+      if (!Array.isArray(list)) return;
+
+      setFiles(list);
+      const entries = await Promise.all(
+        list.map(async (item) => {
+          try {
+            const r = await fetch(`${API_URL}/api/code/files/${item.id}`, { headers });
+            const row = r.ok ? await r.json() : null;
+            return [item.path, row?.content || ''];
+          } catch {
+            return [item.path, ''];
+          }
+        })
+      );
+      setContents(Object.fromEntries(entries));
+
+      if (list.length > 0) {
+        const current = list.find((item) => item.id === window.activeFileId);
+        const selected = current || list.find((item) => item.path === 'index.html') || list[0];
+        setActiveFileId(selected.id);
+        window.activeFileId = selected.id;
       }
     } catch (error) {
       console.error('Erreur fetchFiles', error);
     }
   };
+
+  const activeFile = files.find((item) => item.id === activeFileId);
+
+  const selectFile = (id) => {
+    setActiveFileId(id);
+    window.activeFileId = id;
+  };
+
+  const previewHtml = useMemo(() => {
+    if (!activeFile || !/\.html?$/i.test(activeFile.path)) return '';
+    const dir = activeFile.path.includes('/') ? activeFile.path.slice(0, activeFile.path.lastIndexOf('/') + 1) : '';
+    const resolve = (ref) => {
+      if (/^(https?:)?\/\//i.test(ref)) return null;
+      const clean = ref.replace(/^\.\//, '').replace(/^\//, '');
+      return contents[ref.startsWith('/') ? clean : dir + clean] ?? contents[clean] ?? null;
+    };
+    return (contents[activeFile.path] || '')
+      .replace(/<link[^>]+href=["']([^"']+\.css)["'][^>]*>/gi, (match, href) => {
+        const css = resolve(href);
+        return css === null ? match : `<style>${css}</style>`;
+      })
+      .replace(/<script[^>]+src=["']([^"']+\.js)["'][^>]*><\/script>/gi, (match, src) => {
+        const js = resolve(src);
+        return js === null ? match : `<script>${js.replace(/<\/script/gi, '<\\/script')}</script>`;
+      });
+  }, [activeFile, contents]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -164,6 +208,7 @@ export default function BlueprintEditor() {
 
       setRefineInstruction('');
       window.activeFileId = activeFileId;
+      await fetchFiles();
       showToast('✅ Code modifié par l’IA', 'success');
     } catch (error) {
       showToast(`Erreur raffinement : ${error.message}`, 'error');
@@ -372,6 +417,33 @@ export default function BlueprintEditor() {
         )}
       </div>
 
+      {files.length > 0 && (
+        <div style={styles.previewPanel}>
+          <div style={styles.fileList}>
+            {files.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => selectFile(item.id)}
+                style={item.id === activeFileId ? { ...styles.fileTab, ...styles.fileTabActive } : styles.fileTab}
+              >
+                {getFileIcon(item.path)} {item.path}
+              </button>
+            ))}
+          </div>
+          {previewHtml ? (
+            <iframe
+              title="Aperçu du site généré"
+              sandbox="allow-scripts"
+              srcDoc={previewHtml}
+              style={styles.previewFrame}
+            />
+          ) : (
+            <pre style={styles.codeView}>{contents[activeFile?.path] || ''}</pre>
+          )}
+        </div>
+      )}
+
       <div style={styles.refineBar}>
         <input
           type="text"
@@ -523,6 +595,12 @@ const styles = {
   aiButtonSecondary: { background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 8, padding: '10px 16px', cursor: 'pointer' },
   suggestionsBox: { display: 'grid', gap: 8 },
   suggestionButton: { display: 'grid', gap: 4, textAlign: 'left', background: '#111827', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 10, padding: 10, cursor: 'pointer' },
+  previewPanel: { marginTop: 20, border: '1px solid #334155', borderRadius: 12, overflow: 'hidden', background: '#0f172a' },
+  fileList: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10, borderBottom: '1px solid #334155' },
+  fileTab: { background: 'transparent', color: '#cbd5e1', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 },
+  fileTabActive: { background: 'rgba(20, 184, 166, 0.2)', borderColor: '#14b8a6', color: '#fff' },
+  previewFrame: { width: '100%', height: 420, border: 'none', background: '#fff', display: 'block' },
+  codeView: { margin: 0, padding: 14, maxHeight: 420, overflow: 'auto', color: '#e2e8f0', fontSize: 12 },
   refineBar: { display: 'flex', gap: 8, padding: '10px 14px', background: '#0f172a', borderTop: '1px solid #334155', marginTop: 20 },
   refineInput: { flex: 1, height: 36, padding: '0 12px', border: '1px solid #334155', borderRadius: 8, background: '#020817', color: '#e2e8f0', fontSize: 13 },
   refineButton: { padding: '0 16px', height: 36, background: 'linear-gradient(135deg, #6366f1, #a855f7)', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer' },
