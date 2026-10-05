@@ -115,6 +115,30 @@ const smallButtonStyle = {
   fontSize: 11
 };
 
+async function readSse(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop();
+    for (const block of blocks) {
+      const event = /^event: (.+)$/m.exec(block)?.[1];
+      const data = /^data: (.+)$/m.exec(block)?.[1];
+      if (event && data) {
+        try {
+          onEvent(event, JSON.parse(data));
+        } catch {
+          // bloc SSE illisible, ignoré
+        }
+      }
+    }
+  }
+}
+
 function loadHistory(storageKey) {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
@@ -173,20 +197,50 @@ export default function AIAssistant({ context = {} }) {
     setHistory((prev) => [...prev, { role: 'user', text: trimmed }]);
     const addReply = (text) => setHistory((prev) => [...prev, { role: 'assistant', text }]);
 
-    try {
-      const response = await fetch(`${API_URL}/api/ai/ask`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          message: trimmed,
-          history: previousMessages,
-          context: { platform: 'PolyScale', ...context }
-        })
-      });
+    const payload = JSON.stringify({
+      message: trimmed,
+      history: previousMessages,
+      context: { platform: 'PolyScale', ...context }
+    });
+    const request = (path) => fetch(`${API_URL}/api/ai/${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: payload
+    });
 
+    let streamStarted = false;
+    try {
+      let response = await request('ask-stream');
+
+      if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
+        let streamError = null;
+        let finished = false;
+        await readSse(response, (event, data) => {
+          if (event === 'token') {
+            if (!streamStarted) {
+              streamStarted = true;
+              setHistory((prev) => [...prev, { role: 'assistant', text: data.text }]);
+            } else {
+              setHistory((prev) => {
+                const next = prev.slice();
+                const last = next[next.length - 1];
+                next[next.length - 1] = { ...last, text: last.text + data.text };
+                return next;
+              });
+            }
+          }
+          if (event === 'done') finished = true;
+          if (event === 'error') streamError = data;
+        });
+        if (streamError) throw new Error(streamError.error || 'Le service IA est momentanément indisponible.');
+        if (!finished && !streamStarted) throw new Error('Flux interrompu avant la réponse.');
+        return;
+      }
+
+      if (response.status === 404) response = await request('ask');
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -195,7 +249,16 @@ export default function AIAssistant({ context = {} }) {
 
       addReply(data.reply || fallbackReply(trimmed));
     } catch (error) {
-      addReply(`${fallbackReply(trimmed)}\n\nNote: ${error.message}`);
+      if (streamStarted) {
+        setHistory((prev) => {
+          const next = prev.slice();
+          const last = next[next.length - 1];
+          next[next.length - 1] = { ...last, text: `${last.text}\n\n⚠️ Réponse interrompue : ${error.message}` };
+          return next;
+        });
+      } else {
+        addReply(`${fallbackReply(trimmed)}\n\nNote: ${error.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -254,7 +317,7 @@ export default function AIAssistant({ context = {} }) {
             )}
           </div>
         ))}
-        {loading && <div style={{ color: '#94a3b8', fontSize: 13 }}>L’assistant réfléchit…</div>}
+        {loading && history[history.length - 1]?.role === 'user' && <div style={{ color: '#94a3b8', fontSize: 13 }}>L’assistant réfléchit…</div>}
         <div ref={endRef} />
       </div>
 

@@ -19,6 +19,15 @@ const SKELETON_BLOCKS = [
   { from: 85, height: 28, label: 'Footer' }
 ];
 
+const REFINE_SUGGESTIONS = [
+  'Rends le header plus sombre',
+  'Ajoute une section pricing',
+  'Ajoute une section témoignages',
+  'Rends le design responsive mobile',
+  'Ajoute un formulaire de contact',
+  'Améliore les couleurs et le contraste'
+];
+
 const STATUS_MESSAGES = {
   401: 'Session expirée, reconnectez-vous.',
   429: 'Trop de demandes, patientez quelques instants.',
@@ -78,6 +87,9 @@ export default function BlueprintEditor() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const abortRef = useRef(null);
   const streamingRef = useRef(false);
+  const [isRefining, setIsRefining] = useState(false);
+  const [lastRefine, setLastRefine] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [activeFileId, setActiveFileId] = useState(null);
@@ -259,6 +271,7 @@ export default function BlueprintEditor() {
         }
       }
 
+      setLastRefine(null);
       await fetchFiles();
       setProgress(100);
       setTimeout(() => setShowBuild(false), 1200);
@@ -324,7 +337,13 @@ export default function BlueprintEditor() {
       showToast('Sélectionnez un fichier et donnez une instruction', 'error');
       return;
     }
+    if (isRefining) return;
 
+    const snapshot = activeFile
+      ? { path: activeFile.path, language: activeFile.language, content: contents[activeFile.path] ?? '' }
+      : null;
+
+    setIsRefining(true);
     try {
       const res = await fetch(`${API_URL}/api/code/ai/refine`, {
         method: 'POST',
@@ -338,18 +357,69 @@ export default function BlueprintEditor() {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Erreur raffinement');
       }
 
       setRefineInstruction('');
       window.activeFileId = activeFileId;
+      setLastRefine(snapshot);
       await fetchFiles();
       showToast('✅ Code modifié par l’IA', 'success');
     } catch (error) {
-      showToast(`Erreur raffinement : ${error.message}`, 'error');
+      showToast(`Erreur raffinement : ${describeError(error)}`, 'error');
+    } finally {
+      setIsRefining(false);
     }
+  }
+
+  async function undoRefine() {
+    if (!lastRefine || isRefining) return;
+
+    setIsRefining(true);
+    try {
+      const res = await fetch(`${API_URL}/api/code/files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(lastRefine)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Annulation impossible');
+
+      setLastRefine(null);
+      await fetchFiles();
+      showToast('↩️ Modification annulée', 'success');
+    } catch (error) {
+      showToast(`Erreur : ${describeError(error)}`, 'error');
+    } finally {
+      setIsRefining(false);
+    }
+  }
+
+  async function copyActiveFile() {
+    try {
+      await navigator.clipboard.writeText(contents[activeFile?.path] || '');
+      showToast('📋 Code copié', 'success');
+    } catch {
+      showToast('Copie impossible depuis ce navigateur', 'error');
+    }
+  }
+
+  function downloadActiveFile() {
+    if (!activeFile) return;
+    const blob = new Blob([contents[activeFile.path] || ''], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = activeFile.path.split('/').pop();
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   async function exportZip() {
@@ -611,7 +681,14 @@ export default function BlueprintEditor() {
       )}
 
       {files.length > 0 && !(showBuild && isGenerating) && (
-        <div style={styles.previewPanel}>
+        <div style={fullscreen ? { ...styles.previewPanel, ...styles.previewFullscreen } : styles.previewPanel}>
+          <div style={styles.previewToolbar}>
+            <button type="button" onClick={copyActiveFile} style={styles.fileTab}>📋 Copier</button>
+            <button type="button" onClick={downloadActiveFile} style={styles.fileTab}>⬇️ Télécharger</button>
+            <button type="button" onClick={() => setFullscreen((value) => !value)} style={styles.fileTab}>
+              {fullscreen ? '✕ Quitter le plein écran' : '⛶ Plein écran'}
+            </button>
+          </div>
           <div style={styles.fileList}>
             {files.map((item) => (
               <button
@@ -629,13 +706,21 @@ export default function BlueprintEditor() {
               title="Aperçu du site généré"
               sandbox="allow-scripts"
               srcDoc={previewHtml}
-              style={styles.previewFrame}
+              style={fullscreen ? { ...styles.previewFrame, height: 'calc(100vh - 120px)' } : styles.previewFrame}
             />
           ) : (
-            <pre style={styles.codeView}>{contents[activeFile?.path] || ''}</pre>
+            <pre style={fullscreen ? { ...styles.codeView, maxHeight: 'calc(100vh - 120px)' } : styles.codeView}>{contents[activeFile?.path] || ''}</pre>
           )}
         </div>
       )}
+
+      <div style={styles.refineChips}>
+        {REFINE_SUGGESTIONS.map((suggestion) => (
+          <button key={suggestion} type="button" onClick={() => setRefineInstruction(suggestion)} style={styles.fileTab}>
+            {suggestion}
+          </button>
+        ))}
+      </div>
 
       <div style={styles.refineBar}>
         <input
@@ -648,7 +733,12 @@ export default function BlueprintEditor() {
             if (event.key === 'Enter') refineWithAI();
           }}
         />
-        <button type="button" onClick={refineWithAI} style={styles.refineButton}>Raffiner</button>
+        <button type="button" onClick={refineWithAI} disabled={isRefining} style={styles.refineButton}>
+          {isRefining ? 'Modification…' : 'Raffiner'}
+        </button>
+        {lastRefine && (
+          <button type="button" onClick={undoRefine} disabled={isRefining} style={styles.fileTab}>↩️ Annuler</button>
+        )}
       </div>
 
       {previewOpen && (
@@ -798,6 +888,9 @@ const styles = {
   fileList: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10, borderBottom: '1px solid #334155' },
   fileTab: { background: 'transparent', color: '#cbd5e1', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 },
   fileTabActive: { background: 'rgba(20, 184, 166, 0.2)', borderColor: '#14b8a6', color: '#fff' },
+  previewToolbar: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10, borderBottom: '1px solid #334155', justifyContent: 'flex-end' },
+  previewFullscreen: { position: 'fixed', inset: 0, zIndex: 1100, marginTop: 0, borderRadius: 0, overflow: 'auto' },
+  refineChips: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 20 },
   previewFrame: { width: '100%', height: 420, border: 'none', background: '#fff', display: 'block' },
   codeView: { margin: 0, padding: 14, maxHeight: 420, overflow: 'auto', color: '#e2e8f0', fontSize: 12 },
   refineBar: { display: 'flex', gap: 8, padding: '10px 14px', background: '#0f172a', borderTop: '1px solid #334155', marginTop: 20 },
