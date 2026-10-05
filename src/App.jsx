@@ -9,6 +9,7 @@ import Pricing from './components/Pricing.jsx';
 import PromoPage from './components/PromoPage.jsx';
 import FAQ from './components/FAQ.jsx';
 import BlueprintEditor from './components/BlueprintEditor.jsx';
+import FilterBar, { NoResults, useListFilter } from './components/FilterBar.jsx';
 import AIAssistant from './components/AIAssistant.jsx';
 import Help from './components/Help.jsx';
 
@@ -43,6 +44,23 @@ const apps = [
   { name: 'payments-saas', cluster: 'prod-us-west', status: 'Scaling', uptime: '99.91%', owner: 'Growth' },
   { name: 'billing-api', cluster: 'staging', status: 'Healthy', uptime: '99.92%', owner: 'Product' }
 ];
+
+const byText = (pick) => (a, b) => String(pick(a) ?? '').localeCompare(String(pick(b) ?? ''), 'fr', { numeric: true });
+const appText = (a) => `${a.name} ${a.blueprint} ${a.cluster} ${a.namespace} ${a.status}`;
+const appStatus = (a) => a.status || 'running';
+const appSorters = { name: { label: 'Nom (A→Z)', compare: byText((a) => a.name) }, status: { label: 'Statut', compare: byText(appStatus) } };
+const clusterText = (c) => `${c.name} ${c.clusterName} ${c.apiServer} ${c.status}`;
+const clusterSorters = { name: { label: 'Nom (A→Z)', compare: byText((c) => c.name || c.clusterName) } };
+const blueprintText = (b) => `${b.name} ${b.description} ${b.version}`;
+const blueprintSorters = {
+  name: { label: 'Nom (A→Z)', compare: byText((b) => b.name) },
+  version: { label: 'Version (récente)', compare: (a, b) => byText((x) => x.version)(b, a) }
+};
+const userText = (u) => `${u.email} ${u.role} ${u.tenant} ${u.status}`;
+const userStatus = (u) => u.status || 'active';
+const userSorters = { email: { label: 'Email (A→Z)', compare: byText((u) => u.email) }, role: { label: 'Rôle', compare: byText((u) => u.role) } };
+const auditText = (e) => `${e.event} ${e.tenant} ${e.user_id} ${e.details ? JSON.stringify(e.details) : ''}`;
+const auditSorters = { event: { label: 'Événement (A→Z)', compare: byText((e) => e.event) } };
 
 const planFeatures = [
   '1 cluster',
@@ -578,6 +596,12 @@ function DashboardLayout() {
   const clusterCards = clusters.length ? clusters : [{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }];
   const blueprintList = blueprints.length ? blueprints : (dashboard.blueprints ?? []);
 
+  const appFilter = useListFilter(liveApps, { getText: appText, getStatus: appStatus, sorters: appSorters });
+  const clusterFilter = useListFilter(clusterCards, { getText: clusterText, sorters: clusterSorters });
+  const blueprintFilter = useListFilter(blueprintList, { getText: blueprintText, sorters: blueprintSorters });
+  const userFilter = useListFilter(adminUsers, { getText: userText, getStatus: userStatus, sorters: userSorters });
+  const auditFilter = useListFilter(adminAudit, { getText: auditText, sorters: auditSorters });
+
   const assistantContext = {
     activeView,
     clusters: clusters.slice(0, 6).map((c) => ({ name: c.name || c.clusterName, status: c.status })),
@@ -675,8 +699,10 @@ function DashboardLayout() {
               </button>
             </form>
           )}
+          <FilterBar filter={clusterFilter} placeholder="Rechercher un cluster…" />
+          <NoResults filter={clusterFilter} />
           <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-            {clusterCards.map((cluster) => (
+            {clusterFilter.filtered.map((cluster) => (
               <div key={cluster.id || cluster.name} style={{
                 background: 'rgba(15, 23, 42, 0.8)',
                 border: '1px solid rgba(148,163,184,0.18)',
@@ -729,8 +755,10 @@ function DashboardLayout() {
             <button type="submit" style={styles.primaryButton}>Générer</button>
           </form>
 
+          <FilterBar filter={blueprintFilter} placeholder="Rechercher un blueprint…" />
+          <NoResults filter={blueprintFilter} />
           <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-            {blueprintList.map((bp) => (
+            {blueprintFilter.filtered.map((bp) => (
               <div key={bp.id || bp.name} style={{
                 background: 'rgba(15, 23, 42, 0.8)',
                 border: '1px solid rgba(148,163,184,0.18)',
@@ -768,6 +796,7 @@ function DashboardLayout() {
             <h3 style={styles.panelTitle}>Deployments</h3>
             <button style={styles.secondaryButton} onClick={() => setIsDeployModalOpen(true)}>Deploy app</button>
           </div>
+          <FilterBar filter={appFilter} placeholder="Rechercher une application…" />
           <table style={styles.table}>
             <thead>
               <tr>
@@ -784,7 +813,8 @@ function DashboardLayout() {
                   <td style={styles.td} colSpan={5}><div style={styles.skeletonLine} /></td>
                 </tr>
               ))}
-              {!(loading && !hasLoaded) && liveApps.map((app) => (
+              {!(loading && !hasLoaded) && <NoResults filter={appFilter} colSpan={5} />}
+              {!(loading && !hasLoaded) && appFilter.filtered.map((app) => (
                 <tr key={app.id || app.name}>
                   <td style={styles.td}>{app.name}</td>
                   <td style={styles.td}>{app.blueprint || app.cluster || 'CRM SaaS'}</td>
@@ -963,6 +993,7 @@ function DashboardLayout() {
             <>
               <div style={{ marginBottom: 18 }}>
                 <h4 style={{ ...styles.panelTitle, fontSize: 16, marginBottom: 12 }}>Utilisateurs</h4>
+                <FilterBar filter={userFilter} placeholder="Rechercher un utilisateur…" />
                 <table style={styles.table}>
                   <thead>
                     <tr>
@@ -973,7 +1004,8 @@ function DashboardLayout() {
                     </tr>
                   </thead>
                   <tbody>
-                    {adminUsers.map((user) => (
+                    <NoResults filter={userFilter} colSpan={4} />
+                    {userFilter.filtered.map((user) => (
                       <tr key={user.id || user.email}>
                         <td style={styles.td}>{user.email}</td>
                         <td style={styles.td}>{user.role}</td>
@@ -987,6 +1019,7 @@ function DashboardLayout() {
 
               <div>
                 <h4 style={{ ...styles.panelTitle, fontSize: 16, marginBottom: 12 }}>Audit log</h4>
+                <FilterBar filter={auditFilter} placeholder="Rechercher dans l’audit…" />
                 <table style={styles.table}>
                   <thead>
                     <tr>
@@ -997,7 +1030,8 @@ function DashboardLayout() {
                     </tr>
                   </thead>
                   <tbody>
-                    {adminAudit.map((event) => (
+                    <NoResults filter={auditFilter} colSpan={4} />
+                    {auditFilter.filtered.map((event) => (
                       <tr key={event.id || `${event.event}-${event.created_at}`}>
                         <td style={styles.td}>{event.event}</td>
                         <td style={styles.td}>{event.tenant || 'default'}</td>
