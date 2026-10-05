@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 
-const API_URL_EXPORT = window.API_URL || 'http://localhost:3000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export default function BlueprintEditor() {
   const { token } = useAuth();
@@ -18,6 +18,8 @@ export default function BlueprintEditor() {
   const [aiLanguage, setAiLanguage] = useState('fr');
   const [aiTheme, setAiTheme] = useState('minimal');
   const [aiMultiPage, setAiMultiPage] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [activeFileId, setActiveFileId] = useState(null);
@@ -29,7 +31,7 @@ export default function BlueprintEditor() {
 
   const fetchFiles = async () => {
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/code/files`, {
+      const res = await fetch(`${API_URL}/api/code/files`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) return;
@@ -50,26 +52,30 @@ export default function BlueprintEditor() {
   };
 
   async function generateWithAI() {
+    if (isGenerating || isSuggesting) return;
+
     if (!token) {
       showToast('Connectez-vous pour générer avec l’IA', 'error');
       return;
     }
 
-    if (!aiPrompt.trim()) {
+    const prompt = aiPrompt.trim();
+    if (!prompt) {
       showToast('Décrivez le projet à générer', 'error');
       return;
     }
 
+    setIsGenerating(true);
     try {
       showToast('Génération IA en cours…', 'info');
-      const res = await fetch(`${API_URL_EXPORT}/api/code/ai/generate`, {
+      const res = await fetch(`${API_URL}/api/code/ai/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
-          prompt: aiPrompt,
+          prompt,
           type: aiType,
           language: aiLanguage,
           theme: aiTheme,
@@ -77,7 +83,7 @@ export default function BlueprintEditor() {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Erreur de génération');
       }
@@ -87,30 +93,43 @@ export default function BlueprintEditor() {
     } catch (error) {
       console.error('Erreur generation IA:', error);
       showToast(`Erreur : ${error.message}`, 'error');
+    } finally {
+      setIsGenerating(false);
     }
   }
 
   async function requestSuggestions() {
-    if (!token || !aiPrompt.trim()) {
+    if (isGenerating || isSuggesting) return;
+
+    if (!token) {
+      showToast('Connectez-vous pour obtenir des suggestions', 'error');
+      return;
+    }
+
+    const prompt = aiPrompt.trim();
+    if (!prompt) {
       showToast('Renseignez le brief pour avoir des suggestions', 'error');
       return;
     }
 
+    setIsSuggesting(true);
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/code/ai/suggest`, {
+      const res = await fetch(`${API_URL}/api/code/ai/suggest`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ prompt: aiPrompt })
+        body: JSON.stringify({ prompt })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Erreur suggestions');
       setSuggestions(data.suggestions || []);
     } catch (error) {
       showToast(`Erreur suggestions : ${error.message}`, 'error');
+    } finally {
+      setIsSuggesting(false);
     }
   }
 
@@ -126,7 +145,7 @@ export default function BlueprintEditor() {
     }
 
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/code/ai/refine`, {
+      const res = await fetch(`${API_URL}/api/code/ai/refine`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -160,7 +179,7 @@ export default function BlueprintEditor() {
     try {
       showToast('Préparation du ZIP…', 'info');
 
-      const res = await fetch(`${API_URL_EXPORT}/api/export/zip`, {
+      const res = await fetch(`${API_URL}/api/export/zip`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -200,7 +219,7 @@ export default function BlueprintEditor() {
     setPreviewLoading(true);
 
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/export/preview`, {
+      const res = await fetch(`${API_URL}/api/export/preview`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -318,8 +337,22 @@ export default function BlueprintEditor() {
         </label>
 
         <div style={styles.aiActions}>
-          <button type="button" onClick={generateWithAI} style={styles.aiButtonPrimary}>Générer</button>
-          <button type="button" onClick={requestSuggestions} style={styles.aiButtonSecondary}>Suggestions</button>
+          <button
+            type="button"
+            onClick={generateWithAI}
+            disabled={isGenerating || isSuggesting}
+            style={styles.aiButtonPrimary}
+          >
+            {isGenerating ? 'Génération en cours…' : 'Générer'}
+          </button>
+          <button
+            type="button"
+            onClick={requestSuggestions}
+            disabled={isGenerating || isSuggesting}
+            style={styles.aiButtonSecondary}
+          >
+            {isSuggesting ? 'Recherche…' : 'Suggestions'}
+          </button>
         </div>
 
         {suggestions.length > 0 && (

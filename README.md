@@ -21,3 +21,10 @@ npm install
 npm run build
 npm run preview -- --host 0.0.0.0
 ```
+
+## AI generator
+The blueprint editor sends authenticated requests to the Express backend configured by
+`VITE_API_URL`. The backend must provide `/api/code/ai/generate`, `/api/code/ai/suggest`,
+and `/api/code/ai/refine`, as well as `/api/code/files` to refresh generated files.
+Keep AI provider credentials on the backend; do not expose them in frontend environment
+variables.
