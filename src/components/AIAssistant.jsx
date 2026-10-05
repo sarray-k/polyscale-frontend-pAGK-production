@@ -31,14 +31,128 @@ const fallbackReply = (message) => {
   return 'Je peux vous aider à concevoir un blueprint, sécuriser un tenant, choisir des métriques, ou préparer un plan de déploiement production. Décrivez votre besoin en une phrase.';
 };
 
-export default function AIAssistant() {
-  const { token } = useAuth();
+const MAX_STORED_MESSAGES = 50;
+const WELCOME = {
+  role: 'assistant',
+  text: 'Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.'
+};
+
+function renderInline(text) {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return <code key={index} style={codeInlineStyle}>{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+}
+
+function MessageContent({ text }) {
+  const blocks = [];
+  const lines = text.split('\n');
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.trim().startsWith('```')) {
+      const code = [];
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      blocks.push(<pre key={blocks.length} style={codeBlockStyle}>{code.join('\n')}</pre>);
+      continue;
+    }
+
+    const listMatch = /^\s*(?:[-*]|\d+[.)])\s+/.exec(line);
+    if (listMatch) {
+      const ordered = /^\s*\d/.test(line);
+      const items = [];
+      while (i < lines.length && /^\s*(?:[-*]|\d+[.)])\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*(?:[-*]|\d+[.)])\s+/, ''));
+        i += 1;
+      }
+      const ListTag = ordered ? 'ol' : 'ul';
+      blocks.push(
+        <ListTag key={blocks.length} style={{ margin: '4px 0', paddingLeft: 20, lineHeight: 1.6 }}>
+          {items.map((item, index) => <li key={index}>{renderInline(item)}</li>)}
+        </ListTag>
+      );
+      continue;
+    }
+
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+
+    const heading = /^#{1,3}\s+(.*)$/.exec(line);
+    blocks.push(
+      <p key={blocks.length} style={{ margin: '4px 0', lineHeight: 1.6, fontWeight: heading ? 700 : 400 }}>
+        {renderInline(heading ? heading[1] : line)}
+      </p>
+    );
+    i += 1;
+  }
+
+  return <>{blocks}</>;
+}
+
+const codeInlineStyle = { background: '#0f172a', padding: '1px 5px', borderRadius: 4, fontSize: '0.9em' };
+const codeBlockStyle = { background: '#0b1220', padding: 10, borderRadius: 8, overflowX: 'auto', fontSize: 12, margin: '6px 0' };
+const smallButtonStyle = {
+  background: 'transparent',
+  color: '#94a3b8',
+  border: '1px solid #334155',
+  borderRadius: 6,
+  padding: '2px 8px',
+  cursor: 'pointer',
+  fontSize: 11
+};
+
+function loadHistory(storageKey) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+    if (Array.isArray(saved) && saved.length > 0) return saved;
+  } catch {
+    // stockage corrompu, on repart d'une conversation vide
+  }
+  return [WELCOME];
+}
+
+export default function AIAssistant({ context = {} }) {
+  const { token, user } = useAuth();
+  const storageKey = `polyscale-ai-chat-${user?.id ?? user?.email ?? 'anon'}`;
   const [message, setMessage] = useState('');
-  const [history, setHistory] = useState([
-    { role: 'assistant', text: 'Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.' }
-  ]);
+  const [history, setHistory] = useState(() => loadHistory(storageKey));
+  const [copiedIndex, setCopiedIndex] = useState(null);
   const [loading, setLoading] = useState(false);
   const endRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(history.slice(-MAX_STORED_MESSAGES)));
+    } catch {
+      // quota dépassé : la conversation reste en mémoire
+    }
+  }, [history, storageKey]);
+
+  const resetConversation = () => setHistory([WELCOME]);
+
+  const copyMessage = async (text, index) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 1500);
+    } catch {
+      setCopiedIndex(null);
+    }
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
@@ -63,12 +177,7 @@ export default function AIAssistant() {
         },
         body: JSON.stringify({
           message: trimmed,
-          context: {
-            platform: 'PolyScale',
-            environment: 'production-readiness',
-            tenant: 'demo',
-            modules: ['dashboard', 'deployments', 'blueprints', 'metrics', 'security']
-          }
+          context: { platform: 'PolyScale', ...context }
         })
       });
 
@@ -88,7 +197,12 @@ export default function AIAssistant() {
 
   return (
     <div style={{ position: 'relative', maxWidth: 650 }}>
-      <h3 style={{ marginBottom: 12 }}>Assistant IA</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>Assistant IA</h3>
+        <button type="button" onClick={resetConversation} disabled={loading} style={smallButtonStyle}>
+          Nouvelle conversation
+        </button>
+      </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
         {quickPrompts.map((prompt) => (
@@ -124,7 +238,14 @@ export default function AIAssistant() {
               color: '#e2e8f0'
             }}
           >
-            <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6 }}>{entry.text}</p>
+            {entry.role === 'assistant' ? <MessageContent text={entry.text} /> : (
+              <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6 }}>{entry.text}</p>
+            )}
+            {entry.role === 'assistant' && index > 0 && (
+              <button type="button" onClick={() => copyMessage(entry.text, index)} style={{ ...smallButtonStyle, marginTop: 6 }}>
+                {copiedIndex === index ? 'Copié ✓' : 'Copier'}
+              </button>
+            )}
           </div>
         ))}
         {loading && <div style={{ color: '#94a3b8', fontSize: 13 }}>L’assistant réfléchit…</div>}

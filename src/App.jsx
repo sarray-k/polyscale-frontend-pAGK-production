@@ -555,6 +555,14 @@ function DashboardLayout() {
   const clusterCards = clusters.length ? clusters : [{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }];
   const blueprintList = blueprints.length ? blueprints : (dashboard.blueprints ?? []);
 
+  const assistantContext = {
+    activeView,
+    clusters: clusters.slice(0, 6).map((c) => ({ name: c.name || c.clusterName, status: c.status })),
+    blueprints: blueprintList.slice(0, 6).map((b) => ({ name: b.name, version: b.version })),
+    applications: liveApps.slice(0, 8).map((a) => ({ name: a.name, cluster: a.cluster, status: a.status })),
+    metrics: metrics.map((m) => ({ label: m.label, value: m.value }))
+  };
+
   useEffect(() => {
     if (activeView !== 'metrics' || !token) return undefined;
 
@@ -1239,7 +1247,7 @@ function DashboardLayout() {
             <div style={styles.panelTitleRow}>
               <h3 style={styles.panelTitle}>AI assistant</h3>
             </div>
-            <AIAssistant />
+            <AIAssistant context={assistantContext} />
           </div>
           <div style={styles.panelBox}>
             <div style={styles.panelTitleRow}>
