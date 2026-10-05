@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
+import { useToast } from './context/ToastContext.jsx';
 import { ToastView } from './components/Toast.jsx';
 import Login from './components/Login.jsx';
 import Signup from './components/Signup.jsx';
@@ -181,6 +182,7 @@ function PublicLayout() {
 
 function DashboardLayout() {
   const { logout, token } = useAuth();
+  const { showToast } = useToast();
   const [activeView, setActiveView] = useState('overview');
   const [dashboard, setDashboard] = useState({ metrics: defaultMetrics, applications: apps, blueprints: [] });
   const [clusters, setClusters] = useState([]);
@@ -200,6 +202,9 @@ function DashboardLayout() {
   const [isClusterFormOpen, setIsClusterFormOpen] = useState(false);
   const [isRegisteringCluster, setIsRegisteringCluster] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [appToDelete, setAppToDelete] = useState(null);
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
@@ -224,6 +229,21 @@ function DashboardLayout() {
         fetch(`${API_URL}/api/admin/users`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${API_URL}/api/admin/audit`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
+
+      const failedSources = [
+        ['tableau de bord', overviewRes],
+        ['clusters', clustersRes],
+        ['blueprints', blueprintsRes],
+        ['applications', applicationsRes]
+      ].filter(([, result]) => result.status === 'rejected' || !result.value.ok);
+      const sessionExpired = failedSources.some(([, result]) => result.status === 'fulfilled' && result.value.status === 401);
+      setLoadError(
+        failedSources.length === 0
+          ? null
+          : sessionExpired
+            ? 'Session expirée : reconnectez-vous.'
+            : `Chargement impossible : ${failedSources.map(([label]) => label).join(', ')}. Des données de démonstration peuvent s’afficher.`
+      );
 
       const overviewData = overviewRes.status === 'fulfilled' ? await overviewRes.value.json().catch(() => ({})) : {};
       const clustersData = clustersRes.status === 'fulfilled' ? await clustersRes.value.json().catch(() => []) : [];
@@ -262,6 +282,7 @@ function DashboardLayout() {
         blueprint: prev.blueprint || nextBlueprints[0]?.name || ''
       }));
     } catch (error) {
+      setLoadError('Chargement impossible : le serveur ne répond pas.');
       setDashboard({ metrics: defaultMetrics, applications: apps, blueprints: [] });
       setClusters([{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }]);
       setBlueprints([]);
@@ -274,6 +295,7 @@ function DashboardLayout() {
       setNewApp({ name: '', blueprint: '' });
     } finally {
       setLoading(false);
+      setHasLoaded(true);
     }
   };
 
@@ -298,7 +320,7 @@ function DashboardLayout() {
 
       await loadDashboard();
     } catch (error) {
-      alert(error.message || 'Impossible de créer le lien social');
+      showToast(error.message || 'Impossible de créer le lien social', 'error');
     } finally {
       setCreatingLink(false);
     }
@@ -321,9 +343,9 @@ function DashboardLayout() {
         throw new Error(data.error || 'Impossible d’utiliser ce template');
       }
 
-      alert(`Template ${templateId} activé avec succès`);
+      showToast(`Template ${templateId} activé avec succès`, 'success');
     } catch (error) {
-      alert(error.message || 'Impossible d’utiliser ce template');
+      showToast(error.message || 'Impossible d’utiliser ce template', 'error');
     }
   };
 
@@ -335,7 +357,7 @@ function DashboardLayout() {
     const clusterToken = clusterForm.token.trim();
 
     if (!clusterName || !apiServer || !clusterToken) {
-      alert('Nom, URL de l’API et token sont requis');
+      showToast('Nom, URL de l’API et token sont requis', 'error');
       return;
     }
 
@@ -361,8 +383,9 @@ function DashboardLayout() {
       setClusterForm({ clusterName: '', apiServer: '', token: '', caCert: '' });
       setIsClusterFormOpen(false);
       await loadDashboard();
+      showToast('Cluster enregistré', 'success');
     } catch (error) {
-      alert(error.message || 'Impossible d’enregistrer le cluster');
+      showToast(error.message || 'Impossible d’enregistrer le cluster', 'error');
     } finally {
       setIsRegisteringCluster(false);
     }
@@ -372,7 +395,7 @@ function DashboardLayout() {
     event.preventDefault();
 
     if (!blueprintForm.name.trim()) {
-      alert('Le nom du blueprint est requis');
+      showToast('Le nom du blueprint est requis', 'error');
       return;
     }
 
@@ -395,8 +418,9 @@ function DashboardLayout() {
 
       setBlueprintForm({ name: '', description: '', version: '1.0.0' });
       await loadDashboard();
+      showToast('Blueprint généré', 'success');
     } catch (error) {
-      alert(error.message || 'Impossible de générer le blueprint');
+      showToast(error.message || 'Impossible de générer le blueprint', 'error');
     }
   };
 
@@ -409,7 +433,7 @@ function DashboardLayout() {
       if (!response.ok) throw new Error(data.error || 'Impossible de charger les versions');
       setBlueprintVersions((prev) => ({ ...prev, [blueprintId]: data }));
     } catch (error) {
-      alert(error.message || 'Impossible de charger les versions');
+      showToast(error.message || 'Impossible de charger les versions', 'error');
     }
   };
 
@@ -427,7 +451,7 @@ function DashboardLayout() {
         ...prev,
         [appId]: error.message || 'Impossible de charger les métriques'
       }));
-      alert(error.message || 'Impossible de charger les métriques');
+      showToast(error.message || 'Impossible de charger les métriques', 'error');
     }
   };
 
@@ -444,9 +468,9 @@ function DashboardLayout() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Impossible de démarrer le paiement');
       if (data.url) window.open(data.url, '_blank', 'noopener,noreferrer');
-      else alert('Session créée, vérifiez votre portefeuille de paiement.');
+      else showToast('Session créée, vérifiez votre portefeuille de paiement.', 'info');
     } catch (error) {
-      alert(error.message || 'Impossible de démarrer le paiement');
+      showToast(error.message || 'Impossible de démarrer le paiement', 'error');
     }
   };
 
@@ -469,7 +493,7 @@ function DashboardLayout() {
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      alert(error.message || 'Impossible de télécharger l’export');
+      showToast(error.message || 'Impossible de télécharger l’export', 'error');
     }
   };
 
@@ -504,8 +528,9 @@ function DashboardLayout() {
       setNewApp({ name: '', blueprint: blueprints[0]?.name || '' });
       setIsDeployModalOpen(false);
       await loadDashboard();
+      showToast('Application créée', 'success');
     } catch (error) {
-      alert(error.message || 'Impossible de créer l’application');
+      showToast(error.message || 'Impossible de créer l’application', 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -513,9 +538,6 @@ function DashboardLayout() {
 
   const handleDeleteApp = async (appId) => {
     if (!appId) return;
-    if (!window.confirm('Supprimer cette application ?')) {
-      return;
-    }
 
     setDeletingId(appId);
 
@@ -534,8 +556,9 @@ function DashboardLayout() {
       }
 
       await loadDashboard();
+      showToast('Application supprimée', 'success');
     } catch (error) {
-      alert(error.message || 'Impossible de supprimer l’application');
+      showToast(error.message || 'Impossible de supprimer l’application', 'error');
     } finally {
       setDeletingId(null);
     }
@@ -756,7 +779,12 @@ function DashboardLayout() {
               </tr>
             </thead>
             <tbody>
-              {liveApps.map((app) => (
+              {loading && !hasLoaded && [0, 1, 2].map((row) => (
+                <tr key={`skeleton-${row}`}>
+                  <td style={styles.td} colSpan={5}><div style={styles.skeletonLine} /></td>
+                </tr>
+              ))}
+              {!(loading && !hasLoaded) && liveApps.map((app) => (
                 <tr key={app.id || app.name}>
                   <td style={styles.td}>{app.name}</td>
                   <td style={styles.td}>{app.blueprint || app.cluster || 'CRM SaaS'}</td>
@@ -773,7 +801,7 @@ function DashboardLayout() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDeleteApp(app.id)}
+                        onClick={() => setAppToDelete(app)}
                         disabled={deletingId === app.id}
                         style={
                           deletingId === app.id
@@ -1179,7 +1207,12 @@ function DashboardLayout() {
               </tr>
             </thead>
             <tbody>
-              {liveApps.map((app) => (
+              {loading && !hasLoaded && [0, 1, 2].map((row) => (
+                <tr key={`skeleton-${row}`}>
+                  <td style={styles.td} colSpan={6}><div style={styles.skeletonLine} /></td>
+                </tr>
+              ))}
+              {!(loading && !hasLoaded) && liveApps.map((app) => (
                 <tr key={app.id || app.name}>
                   <td style={styles.td}>{app.name}</td>
                   <td style={styles.td}>{app.cluster}</td>
@@ -1189,7 +1222,7 @@ function DashboardLayout() {
                   <td style={styles.td}>
                     <button
                       type="button"
-                      onClick={() => handleDeleteApp(app.id)}
+                      onClick={() => setAppToDelete(app)}
                       disabled={deletingId === app.id}
                       style={
                         deletingId === app.id
@@ -1304,7 +1337,42 @@ function DashboardLayout() {
           </div>
         </header>
 
+        <style>{'@keyframes skeleton-pulse{0%,100%{opacity:.4}50%{opacity:1}}'}</style>
+        {loadError && (
+          <div role="alert" style={styles.errorBanner}>
+            <span>{loadError}</span>
+            <button type="button" style={styles.secondaryButton} onClick={loadDashboard} disabled={loading}>
+              {loading ? 'Chargement…' : 'Réessayer'}
+            </button>
+          </div>
+        )}
+
         {renderDashboardContent()}
+
+        {appToDelete && (
+          <div style={styles.modalBackdrop} onClick={() => setAppToDelete(null)}>
+            <div style={styles.modalCard} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+              <h3 style={styles.panelTitle}>Supprimer l’application ?</h3>
+              <p style={{ color: '#cbd5e1', lineHeight: 1.6 }}>
+                <strong>{appToDelete.name}</strong> sera supprimée définitivement. Cette action est irréversible.
+              </p>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
+                <button type="button" style={styles.ghostButton} onClick={() => setAppToDelete(null)}>Annuler</button>
+                <button
+                  type="button"
+                  style={styles.dangerButton}
+                  onClick={async () => {
+                    const target = appToDelete;
+                    setAppToDelete(null);
+                    await handleDeleteApp(target.id);
+                  }}
+                >
+                  Supprimer
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {isDeployModalOpen && (
           <div style={styles.modalBackdrop} onClick={() => setIsDeployModalOpen(false)}>
@@ -1494,6 +1562,24 @@ const styles = {
     borderRadius: 10,
     padding: '10px 14px',
     cursor: 'pointer'
+  },
+  errorBanner: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    margin: '0 0 16px',
+    padding: '12px 16px',
+    borderRadius: 12,
+    background: 'rgba(239, 68, 68, 0.15)',
+    border: '1px solid rgba(239, 68, 68, 0.5)',
+    color: '#fecaca'
+  },
+  skeletonLine: {
+    height: 18,
+    borderRadius: 6,
+    background: 'rgba(148, 163, 184, 0.2)',
+    animation: 'skeleton-pulse 1.2s ease-in-out infinite'
   },
   modalBackdrop: {
     position: 'fixed',
