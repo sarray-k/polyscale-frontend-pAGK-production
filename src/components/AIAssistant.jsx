@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -34,8 +34,15 @@ const fallbackReply = (message) => {
 export default function AIAssistant() {
   const { token } = useAuth();
   const [message, setMessage] = useState('');
-  const [reply, setReply] = useState('Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.');
-  const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState([
+    { role: 'assistant', text: 'Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.' }
+  ]);
+    const [loading, setLoading] = useState(false);
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+  }, [history]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -43,7 +50,9 @@ export default function AIAssistant() {
     if (!trimmed || loading) return;
 
     setLoading(true);
-    setReply('Je traite votre demande...');
+    setMessage('');
+    setHistory((prev) => [...prev, { role: 'user', text: trimmed }]);
+    const addReply = (text) => setHistory((prev) => [...prev, { role: 'assistant', text }]);
 
     try {
       const response = await fetch(`${API_URL}/api/ai/ask`, {
@@ -69,11 +78,9 @@ export default function AIAssistant() {
         throw new Error(data.error || 'Le service IA est momentanément indisponible.');
       }
 
-      setReply(data.reply || fallbackReply(trimmed));
-      setMessage('');
+      addReply(data.reply || fallbackReply(trimmed));
     } catch (error) {
-      setReply(`${fallbackReply(trimmed)}\n\nNote: ${error.message}`);
-      setMessage('');
+      addReply(`${fallbackReply(trimmed)}\n\nNote: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -104,8 +111,24 @@ export default function AIAssistant() {
         ))}
       </div>
 
-      <div style={{ background: '#111827', borderRadius: 12, padding: 16, border: '1px solid #334155', minHeight: 140 }}>
-        <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6, color: '#e2e8f0' }}>{reply}</p>
+      <div style={{ background: '#111827', borderRadius: 12, padding: 16, border: '1px solid #334155', minHeight: 140, maxHeight: 360, overflowY: 'auto', display: 'grid', gap: 10 }}>
+        {history.map((entry, index) => (
+          <div
+            key={index}
+            style={{
+              justifySelf: entry.role === 'user' ? 'end' : 'start',
+              maxWidth: '85%',
+              padding: '8px 12px',
+              borderRadius: 10,
+              background: entry.role === 'user' ? 'rgba(20, 184, 166, 0.25)' : '#1e293b',
+              color: '#e2e8f0'
+            }}
+          >
+            <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6 }}>{entry.text}</p>
+          </div>
+        ))}
+        {loading && <div style={{ color: '#94a3b8', fontSize: 13 }}>L’assistant réfléchit…</div>}
+        <div ref={endRef} />
       </div>
 
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
@@ -113,6 +136,12 @@ export default function AIAssistant() {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={4}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit(e);
+            }
+          }}
           placeholder="Posez une question à l’assistant IA..."
           style={{
             padding: 12,

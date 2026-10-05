@@ -1,8 +1,20 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+const STATUS_MESSAGES = {
+  401: 'Session expirée, reconnectez-vous.',
+  429: 'Trop de demandes, patientez quelques instants.',
+  503: 'Le service IA n’est pas configuré sur le serveur.'
+};
+
+function describeError(error, status) {
+  if (error?.name === 'AbortError') return 'Génération annulée.';
+  if (error instanceof TypeError) return 'Serveur injoignable (réseau ou CORS).';
+  return STATUS_MESSAGES[status] || error?.message || 'Erreur inconnue';
+}
 
 export default function BlueprintEditor() {
   const { token } = useAuth();
@@ -20,6 +32,8 @@ export default function BlueprintEditor() {
   const [aiMultiPage, setAiMultiPage] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSuggesting, setIsSuggesting] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const abortRef = useRef(null);
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [activeFileId, setActiveFileId] = useState(null);
@@ -63,6 +77,17 @@ export default function BlueprintEditor() {
       console.error('Erreur fetchFiles', error);
     }
   };
+
+  useEffect(() => {
+    if (!isGenerating) return undefined;
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [isGenerating]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const cancelGeneration = () => abortRef.current?.abort();
 
   const activeFile = files.find((item) => item.id === activeFileId);
 
@@ -109,11 +134,15 @@ export default function BlueprintEditor() {
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let status;
     setIsGenerating(true);
     try {
       showToast('Génération IA en cours…', 'info');
       const res = await fetch(`${API_URL}/api/code/ai/generate`, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
@@ -127,17 +156,23 @@ export default function BlueprintEditor() {
         })
       });
 
+      status = res.status;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Erreur de génération');
       }
 
       await fetchFiles();
-      showToast('✅ Site généré par l’IA', 'success');
+      if (data.truncated) {
+        showToast('⚠️ Réponse tronquée : essayez un brief plus court ou un site mono-page', 'info');
+      } else {
+        showToast(`✅ ${data.files?.length || 0} fichier(s) générés par l’IA`, 'success');
+      }
     } catch (error) {
       console.error('Erreur generation IA:', error);
-      showToast(`Erreur : ${error.message}`, 'error');
+      showToast(`Erreur : ${describeError(error, status)}`, error?.name === 'AbortError' ? 'info' : 'error');
     } finally {
+      abortRef.current = null;
       setIsGenerating(false);
     }
   }
@@ -388,8 +423,11 @@ export default function BlueprintEditor() {
             disabled={isGenerating || isSuggesting}
             style={styles.aiButtonPrimary}
           >
-            {isGenerating ? 'Génération en cours…' : 'Générer'}
+            {isGenerating ? `Génération en cours… ${elapsed}s` : 'Générer'}
           </button>
+          {isGenerating && (
+            <button type="button" onClick={cancelGeneration} style={styles.aiButtonSecondary}>Annuler</button>
+          )}
           <button
             type="button"
             onClick={requestSuggestions}
