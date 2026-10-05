@@ -28,7 +28,7 @@ const REFINE_SUGGESTIONS = [
   'Améliore les couleurs et le contraste'
 ];
 
-const MAX_PROMPT_CHARS = 4000;
+const MAX_PROMPT_CHARS = Number(import.meta.env.VITE_MAX_PROMPT_CHARS) || 4000;
 const TEXT_FILE_PATTERN = /\.(html?|css|js|jsx|ts|tsx|json|md|txt|yml|yaml|xml|csv|svg)$/i;
 
 const STATUS_MESSAGES = {

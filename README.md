@@ -28,3 +28,6 @@ The blueprint editor sends authenticated requests to the Express backend configu
 and `/api/code/ai/refine`, as well as `/api/code/files` to refresh generated files.
 Keep AI provider credentials on the backend; do not expose them in frontend environment
 variables.
+
+Optional: set `VITE_MAX_PROMPT_CHARS` to the same value as the backend `MAX_BRIEF_LENGTH`
+(default 4000) to allow longer briefs and larger attached files. It is read at build time.
