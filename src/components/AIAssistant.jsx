@@ -37,7 +37,7 @@ export default function AIAssistant() {
   const [history, setHistory] = useState([
     { role: 'assistant', text: 'Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.' }
   ]);
-    const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const endRef = useRef(null);
 
   useEffect(() => {
