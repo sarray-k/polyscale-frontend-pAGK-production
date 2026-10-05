@@ -33,6 +33,8 @@ export default function BlueprintEditor() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [history, setHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const abortRef = useRef(null);
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
@@ -88,6 +90,29 @@ export default function BlueprintEditor() {
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const cancelGeneration = () => abortRef.current?.abort();
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/code/ai/history`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => []);
+      if (res.ok && Array.isArray(data)) setHistory(data);
+    } catch (error) {
+      console.error('Erreur historique', error);
+    }
+  };
+
+  const toggleHistory = () => {
+    if (!historyOpen) fetchHistory();
+    setHistoryOpen((value) => !value);
+  };
+
+  const reuseGeneration = (item) => {
+    setAiPrompt(item.prompt || '');
+    if (item.type) setAiType(item.type);
+    setHistoryOpen(false);
+  };
 
   const activeFile = files.find((item) => item.id === activeFileId);
 
@@ -163,6 +188,7 @@ export default function BlueprintEditor() {
       }
 
       await fetchFiles();
+      if (historyOpen) fetchHistory();
       if (data.truncated) {
         showToast('⚠️ Réponse tronquée : essayez un brief plus court ou un site mono-page', 'info');
       } else {
@@ -437,6 +463,29 @@ export default function BlueprintEditor() {
             {isSuggesting ? 'Recherche…' : 'Suggestions'}
           </button>
         </div>
+
+        {historyOpen && (
+          <div style={styles.suggestionsBox}>
+            {history.length === 0 ? (
+              <span style={{ color: '#94a3b8', fontSize: 13 }}>Aucune génération pour le moment.</span>
+            ) : (
+              history.map((item) => (
+                <button
+                  key={item.id ?? `${item.created_at}-${item.prompt}`}
+                  type="button"
+                  style={styles.suggestionButton}
+                  onClick={() => reuseGeneration(item)}
+                >
+                  <strong>{item.type || 'site'} · {item.files_count ?? 0} fichier(s)</strong>
+                  <span>
+                    {(item.prompt || '').slice(0, 120)}
+                    {item.created_at ? ` — ${new Date(item.created_at).toLocaleString('fr-FR')}` : ''}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
 
         {suggestions.length > 0 && (
           <div style={styles.suggestionsBox}>
