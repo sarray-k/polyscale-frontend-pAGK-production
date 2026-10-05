@@ -25,6 +25,30 @@ const STATUS_MESSAGES = {
   503: 'Le service IA n’est pas configuré sur le serveur.'
 };
 
+async function readSse(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop();
+    for (const block of blocks) {
+      const event = /^event: (.+)$/m.exec(block)?.[1];
+      const data = /^data: (.+)$/m.exec(block)?.[1];
+      if (event && data) {
+        try {
+          onEvent(event, JSON.parse(data));
+        } catch {
+          // bloc SSE illisible, ignoré
+        }
+      }
+    }
+  }
+}
+
 function describeError(error, status) {
   if (error?.name === 'AbortError') return 'Génération annulée.';
   if (error instanceof TypeError) return 'Serveur injoignable (réseau ou CORS).';
@@ -53,6 +77,7 @@ export default function BlueprintEditor() {
   const [history, setHistory] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const abortRef = useRef(null);
+  const streamingRef = useRef(false);
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [activeFileId, setActiveFileId] = useState(null);
@@ -106,7 +131,9 @@ export default function BlueprintEditor() {
     const timer = setInterval(() => {
       const ms = Date.now() - startedAt;
       setElapsed(Math.floor(ms / 1000));
-      setProgress(Math.min(95, Math.round(95 * (1 - Math.exp(-ms / expectedMs)))));
+      if (!streamingRef.current) {
+        setProgress(Math.min(95, Math.round(95 * (1 - Math.exp(-ms / expectedMs)))));
+      }
     }, 250);
     return () => clearInterval(timer);
   }, [isGenerating]);
@@ -190,26 +217,46 @@ export default function BlueprintEditor() {
     setIsGenerating(true);
     try {
       showToast('Génération IA en cours…', 'info');
-      const res = await fetch(`${API_URL}/api/code/ai/generate`, {
+      const body = JSON.stringify({
+        prompt,
+        type: aiType,
+        language: aiLanguage,
+        theme: aiTheme,
+        multiPage: aiMultiPage
+      });
+      const request = (path) => fetch(`${API_URL}/api/code/ai/${path}`, {
         method: 'POST',
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({
-          prompt,
-          type: aiType,
-          language: aiLanguage,
-          theme: aiTheme,
-          multiPage: aiMultiPage
-        })
+        body
       });
 
-      status = res.status;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Erreur de génération');
+      let res = await request('generate-stream');
+      let data;
+
+      if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) {
+        streamingRef.current = true;
+        let streamError = null;
+        await readSse(res, (event, payload) => {
+          if (event === 'progress') setProgress(Math.min(99, payload.percent));
+          if (event === 'done') data = payload;
+          if (event === 'error') streamError = payload;
+        });
+        if (streamError) {
+          status = streamError.status;
+          throw new Error(streamError.error || 'Erreur de génération');
+        }
+        if (!data) throw new Error('Flux interrompu avant la fin de la génération');
+      } else {
+        if (res.status === 404) res = await request('generate');
+        status = res.status;
+        data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Erreur de génération');
+        }
       }
 
       await fetchFiles();
@@ -227,6 +274,7 @@ export default function BlueprintEditor() {
       showToast(`Erreur : ${describeError(error, status)}`, error?.name === 'AbortError' ? 'info' : 'error');
     } finally {
       abortRef.current = null;
+      streamingRef.current = false;
       setIsGenerating(false);
     }
   }
@@ -558,7 +606,7 @@ export default function BlueprintEditor() {
               </div>
             ))}
           </div>
-          <small style={{ color: '#94a3b8' }}>Progression estimée — l’aperçu réel s’affiche à la fin.</small>
+          <small style={{ color: '#94a3b8' }}>Progression en direct — l’aperçu complet s’affiche à la fin.</small>
         </div>
       )}
 
