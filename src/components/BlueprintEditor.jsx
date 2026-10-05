@@ -28,6 +28,9 @@ const REFINE_SUGGESTIONS = [
   'Améliore les couleurs et le contraste'
 ];
 
+const MAX_PROMPT_CHARS = 4000;
+const TEXT_FILE_PATTERN = /\.(html?|css|js|jsx|ts|tsx|json|md|txt|yml|yaml|xml|csv|svg)$/i;
+
 const STATUS_MESSAGES = {
   401: 'Session expirée, reconnectez-vous.',
   429: 'Trop de demandes, patientez quelques instants.',
@@ -88,6 +91,7 @@ export default function BlueprintEditor() {
   const abortRef = useRef(null);
   const streamingRef = useRef(false);
   const [isRefining, setIsRefining] = useState(false);
+  const [attachments, setAttachments] = useState([]);
   const [lastRefine, setLastRefine] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
@@ -208,6 +212,30 @@ export default function BlueprintEditor() {
     console.log('create blueprint', { ...form, fileName: file?.name || 'none' });
   };
 
+  const attachmentsText = attachments
+    .map((item) => `\n\n--- Fichier joint : ${item.name} ---\n${item.content}`)
+    .join('');
+  const totalChars = aiPrompt.trim().length + attachmentsText.length;
+
+  async function attachFiles(event) {
+    const picked = Array.from(event.target.files || []);
+    event.target.value = '';
+
+    for (const file of picked) {
+      if (!TEXT_FILE_PATTERN.test(file.name)) {
+        showToast(`${file.name} : format non pris en charge (texte, HTML, CSS, JS, JSON, MD…)`, 'error');
+        continue;
+      }
+      const content = (await file.text()).trim();
+      const used = aiPrompt.trim().length + attachments.reduce((sum, item) => sum + item.content.length + item.name.length + 30, 0);
+      if (used + content.length + file.name.length + 30 > MAX_PROMPT_CHARS) {
+        showToast(`${file.name} : trop volumineux (limite totale ${MAX_PROMPT_CHARS} caractères)`, 'error');
+        continue;
+      }
+      setAttachments((prev) => [...prev.filter((item) => item.name !== file.name), { name: file.name, content }]);
+    }
+  }
+
   async function generateWithAI() {
     if (isGenerating || isSuggesting) return;
 
@@ -216,9 +244,13 @@ export default function BlueprintEditor() {
       return;
     }
 
-    const prompt = aiPrompt.trim();
-    if (!prompt) {
+    const prompt = `${aiPrompt.trim()}${attachmentsText}`;
+    if (!aiPrompt.trim()) {
       showToast('Décrivez le projet à générer', 'error');
+      return;
+    }
+    if (prompt.length > MAX_PROMPT_CHARS) {
+      showToast(`Brief trop long (${prompt.length}/${MAX_PROMPT_CHARS} caractères)`, 'error');
       return;
     }
 
@@ -532,7 +564,7 @@ export default function BlueprintEditor() {
         <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description" style={styles.input} rows={4} />
         <input value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="Version" style={styles.input} />
         <label style={{ display: 'grid', gap: 8 }}>
-          <span>Helm chart (.tgz)</span>
+          <span>Helm chart (.tgz) — pour le blueprint, pas pour l’IA</span>
           <input type="file" accept=".tgz" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
         </label>
         <button type="submit" style={styles.button}>Créer le blueprint</button>
@@ -581,6 +613,41 @@ export default function BlueprintEditor() {
               <option value="dark">Dark</option>
             </select>
           </div>
+        </div>
+
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <label style={styles.fileTab}>
+              📎 Joindre des fichiers
+              <input
+                type="file"
+                multiple
+                accept=".html,.htm,.css,.js,.jsx,.ts,.tsx,.json,.md,.txt,.yml,.yaml,.xml,.csv,.svg"
+                onChange={attachFiles}
+                style={{ display: 'none' }}
+              />
+            </label>
+            <small style={{ color: totalChars > MAX_PROMPT_CHARS ? '#f87171' : '#94a3b8' }}>
+              {totalChars}/{MAX_PROMPT_CHARS} caractères
+            </small>
+          </div>
+          {attachments.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {attachments.map((item) => (
+                <span key={item.name} style={{ ...styles.fileTab, display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  📄 {item.name} ({item.content.length})
+                  <button
+                    type="button"
+                    aria-label={`Retirer ${item.name}`}
+                    onClick={() => setAttachments((prev) => prev.filter((entry) => entry.name !== item.name))}
+                    style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer' }}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#cbd5e1' }}>
