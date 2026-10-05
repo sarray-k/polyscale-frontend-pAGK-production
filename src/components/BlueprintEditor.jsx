@@ -67,7 +67,7 @@ function describeError(error, status) {
   return STATUS_MESSAGES[status] || error?.message || 'Erreur inconnue';
 }
 
-export default function BlueprintEditor() {
+export default function BlueprintEditor({ onBlueprintCreated }) {
   const { token } = useAuth();
   const { showToast } = useToast();
   const [form, setForm] = useState({ name: 'payment-saas', description: '', version: '1.0.0' });
@@ -92,6 +92,8 @@ export default function BlueprintEditor() {
   const streamingRef = useRef(false);
   const [isRefining, setIsRefining] = useState(false);
   const [attachments, setAttachments] = useState([]);
+  const [isCreating, setIsCreating] = useState(false);
+  const fileInputRef = useRef(null);
   const [lastRefine, setLastRefine] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
@@ -207,9 +209,66 @@ export default function BlueprintEditor() {
       });
   }, [activeFile, contents]);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log('create blueprint', { ...form, fileName: file?.name || 'none' });
+    if (isCreating) return;
+
+    if (!token) {
+      showToast('Connectez-vous pour créer un blueprint', 'error');
+      return;
+    }
+
+    const name = form.name.trim();
+    if (!name) {
+      showToast('Le nom du blueprint est requis', 'error');
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+      showToast('Nom invalide : lettres, chiffres, point, tiret et underscore uniquement', 'error');
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      let res;
+      if (file) {
+        const body = new FormData();
+        body.append('name', name);
+        body.append('description', form.description.trim());
+        body.append('chart', file);
+        res = await fetch(`${API_URL}/api/blueprints/upload`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body
+        });
+      } else {
+        res = await fetch(`${API_URL}/api/blueprints/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            name,
+            description: form.description.trim(),
+            version: form.version.trim() || '1.0.0'
+          })
+        });
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Création du blueprint impossible');
+
+      showToast(`✅ Blueprint « ${data.name || name} » ${data.version || ''} créé`, 'success');
+      setForm({ name: '', description: '', version: '1.0.0' });
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      onBlueprintCreated?.();
+    } catch (error) {
+      showToast(`Erreur : ${describeError(error)}`, 'error');
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const attachmentsText = attachments
@@ -562,12 +621,21 @@ export default function BlueprintEditor() {
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12, maxWidth: 500 }}>
         <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom" style={styles.input} />
         <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description" style={styles.input} rows={4} />
-        <input value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="Version" style={styles.input} />
+        <input
+          value={form.version}
+          onChange={(e) => setForm({ ...form, version: e.target.value })}
+          placeholder="Version"
+          disabled={Boolean(file)}
+          title={file ? 'La version est lue dans le Chart.yaml du fichier' : undefined}
+          style={styles.input}
+        />
         <label style={{ display: 'grid', gap: 8 }}>
-          <span>Helm chart (.tgz) — pour le blueprint, pas pour l’IA</span>
-          <input type="file" accept=".tgz" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+          <span>Helm chart (.tgz) — facultatif, sans fichier un blueprint vide est généré</span>
+          <input ref={fileInputRef} type="file" accept=".tgz" onChange={(e) => setFile(e.target.files[0] || null)} style={styles.fileInput} />
         </label>
-        <button type="submit" style={styles.button}>Créer le blueprint</button>
+        <button type="submit" disabled={isCreating} style={styles.button}>
+          {isCreating ? 'Création…' : 'Créer le blueprint'}
+        </button>
       </form>
 
       <div style={styles.aiPanel}>

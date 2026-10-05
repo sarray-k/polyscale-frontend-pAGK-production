@@ -1253,7 +1253,7 @@ function DashboardLayout() {
             <div style={styles.panelTitleRow}>
               <h3 style={styles.panelTitle}>Blueprint editor</h3>
             </div>
-            <BlueprintEditor />
+            <BlueprintEditor onBlueprintCreated={loadDashboard} />
           </div>
         </section>
       </>
