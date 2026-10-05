@@ -28,7 +28,9 @@ const REFINE_SUGGESTIONS = [
   'Améliore les couleurs et le contraste'
 ];
 
-const MAX_PROMPT_CHARS = Number(import.meta.env.VITE_MAX_PROMPT_CHARS) || 4000;
+const BASE_PROMPT_CHARS = 4000;
+const EXTENDED_PROMPT_CHARS = Number(import.meta.env.VITE_MAX_PROMPT_CHARS) || 24000;
+const EXTENDED_PLANS = ['scale-up', 'enterprise'];
 const TEXT_FILE_PATTERN = /\.(html?|css|js|jsx|ts|tsx|json|md|txt|yml|yaml|xml|csv|svg)$/i;
 
 const STATUS_MESSAGES = {
@@ -68,8 +70,10 @@ function describeError(error, status) {
 }
 
 export default function BlueprintEditor({ onBlueprintCreated }) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { showToast } = useToast();
+  const hasExtendedBrief = user?.role === 'admin' || EXTENDED_PLANS.includes(String(user?.status || '').toLowerCase());
+  const MAX_PROMPT_CHARS = hasExtendedBrief ? EXTENDED_PROMPT_CHARS : BASE_PROMPT_CHARS;
   const [form, setForm] = useState({ name: 'payment-saas', description: '', version: '1.0.0' });
   const [file, setFile] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -309,7 +313,7 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
       return;
     }
     if (prompt.length > MAX_PROMPT_CHARS) {
-      showToast(`Brief trop long (${prompt.length}/${MAX_PROMPT_CHARS} caractères)`, 'error');
+      showToast(`Brief trop long (${prompt.length}/${MAX_PROMPT_CHARS} caractères)${hasExtendedBrief ? '' : ' — passez au plan Scale-Up pour ' + EXTENDED_PROMPT_CHARS + ' caractères'}`, 'error');
       return;
     }
 
@@ -698,6 +702,11 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
             <small style={{ color: totalChars > MAX_PROMPT_CHARS ? '#f87171' : '#94a3b8' }}>
               {totalChars}/{MAX_PROMPT_CHARS} caractères
             </small>
+            {!hasExtendedBrief && (
+              <small style={{ color: '#a78bfa' }}>
+                Fichiers jusqu’à {EXTENDED_PROMPT_CHARS} caractères avec les plans Scale-Up et Enterprise
+              </small>
+            )}
           </div>
           {attachments.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

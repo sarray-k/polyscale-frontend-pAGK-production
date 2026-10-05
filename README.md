@@ -29,5 +29,6 @@ and `/api/code/ai/refine`, as well as `/api/code/files` to refresh generated fil
 Keep AI provider credentials on the backend; do not expose them in frontend environment
 variables.
 
-Optional: set `VITE_MAX_PROMPT_CHARS` to the same value as the backend `MAX_BRIEF_LENGTH`
-(default 4000) to allow longer briefs and larger attached files. It is read at build time.
+Briefs and attached files are limited to 4000 characters on the Starter plan. Scale-Up and
+Enterprise plans (and admins) get up to `VITE_MAX_PROMPT_CHARS` (default 24000, read at build time),
+which must match the backend `MAX_BRIEF_LENGTH`.
