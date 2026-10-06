@@ -220,6 +220,7 @@ function DashboardLayout() {
   const [dashboard, setDashboard] = useState({ metrics: defaultMetrics, applications: apps, blueprints: [] });
   const [clusters, setClusters] = useState([]);
   const [blueprints, setBlueprints] = useState([]);
+  const [blueprintsLoadError, setBlueprintsLoadError] = useState('');
   const [socialStats, setSocialStats] = useState({ totalLinks: 0, totalClicks: 0, totalConversions: 0, estimatedReward: 0 });
   const [socialLinks, setSocialLinks] = useState([]);
   const [templates, setTemplates] = useState(defaultTemplates);
@@ -274,7 +275,6 @@ function DashboardLayout() {
       const failedSources = [
         ['tableau de bord', overviewRes],
         ['clusters', clustersRes],
-        ['blueprints', blueprintsRes],
         ['applications', applicationsRes]
       ].filter(([, result]) => result.status === 'rejected' || !result.value.ok);
       const sessionExpired = failedSources.some(([, result]) => result.status === 'fulfilled' && result.value.status === 401);
@@ -288,7 +288,33 @@ function DashboardLayout() {
 
       const overviewData = overviewRes.status === 'fulfilled' ? await overviewRes.value.json().catch(() => ({})) : {};
       const clustersData = clustersRes.status === 'fulfilled' ? await clustersRes.value.json().catch(() => []) : [];
-      const blueprintsData = blueprintsRes.status === 'fulfilled' ? await blueprintsRes.value.json().catch(() => []) : [];
+      let blueprintsData = [];
+      let blueprintsError = '';
+      let isCatalogResponse = false;
+      let responsePlan = 'starter';
+      let responseAccessCount = NaN;
+      if (blueprintsRes.status === 'rejected') {
+        blueprintsError = blueprintsRes.reason?.message || 'Impossible de joindre le catalogue de blueprints.';
+      } else if (!blueprintsRes.value.ok) {
+        const errorData = await blueprintsRes.value.json().catch(() => ({}));
+        blueprintsError = errorData.error || 'Impossible de charger le catalogue de blueprints.';
+      } else {
+        try {
+          const responseData = await blueprintsRes.value.json();
+          if (Array.isArray(responseData)) {
+            blueprintsData = responseData;
+          } else if (Array.isArray(responseData?.blueprints)) {
+            blueprintsData = responseData.blueprints;
+            isCatalogResponse = true;
+            responsePlan = responseData.plan || 'starter';
+            responseAccessCount = Number(responseData.count);
+          } else {
+            blueprintsError = 'Format de réponse invalide pour le catalogue de blueprints.';
+          }
+        } catch {
+          blueprintsError = 'Réponse invalide du catalogue de blueprints.';
+        }
+      }
       const applicationsData = applicationsRes.status === 'fulfilled' ? await applicationsRes.value.json().catch(() => []) : [];
       const socialStatsData = socialStatsRes.status === 'fulfilled' ? await socialStatsRes.value.json().catch(() => ({ totalLinks: 0, totalClicks: 0, totalConversions: 0, estimatedReward: 0 })) : { totalLinks: 0, totalClicks: 0, totalConversions: 0, estimatedReward: 0 };
       const socialLinksData = socialLinksRes.status === 'fulfilled' ? await socialLinksRes.value.json().catch(() => []) : [];
@@ -297,12 +323,7 @@ function DashboardLayout() {
       const adminUsersData = adminUsersRes.status === 'fulfilled' ? await adminUsersRes.value.json().catch(() => []) : [];
       const adminAuditData = adminAuditRes.status === 'fulfilled' ? await adminAuditRes.value.json().catch(() => []) : [];
 
-      const isCatalogResponse = !Array.isArray(blueprintsData) && Array.isArray(blueprintsData?.blueprints);
-      const catalogBlueprints = isCatalogResponse ? blueprintsData.blueprints : [];
-      const responseAccessCount = Number(blueprintsData?.count);
-      const nextBlueprints = isCatalogResponse
-        ? catalogBlueprints
-        : (Array.isArray(blueprintsData) && blueprintsData.length ? blueprintsData : (overviewData.blueprints || []));
+      const nextBlueprints = blueprintsError ? [] : blueprintsData;
       const metrics = [
         { label: 'Active clusters', value: String(overviewData.metrics?.activeClusters ?? clustersData.length ?? 0), delta: '+0%', tone: 'cyan' },
         { label: 'Deployments', value: String(overviewData.metrics?.deployments ?? applicationsData.length ?? 0), delta: '+0%', tone: 'green' },
@@ -317,12 +338,13 @@ function DashboardLayout() {
       });
       setClusters(clustersData.length ? clustersData : [{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }]);
       setBlueprints(nextBlueprints);
+      setBlueprintsLoadError(blueprintsError);
       setIsPlanCatalog(isCatalogResponse);
-      setBlueprintPlan(isCatalogResponse ? blueprintsData.plan || 'starter' : 'starter');
+      setBlueprintPlan(isCatalogResponse ? responsePlan : 'starter');
       setBlueprintAccessCount(isCatalogResponse
         ? Number.isFinite(responseAccessCount)
           ? responseAccessCount
-          : catalogBlueprints.filter((blueprint) => blueprint.locked === false).length
+          : blueprintsData.filter((blueprint) => blueprint.locked === false).length
         : nextBlueprints.length);
       setSocialStats(socialStatsData);
       setSocialLinks(Array.isArray(socialLinksData) ? socialLinksData : []);
@@ -341,6 +363,7 @@ function DashboardLayout() {
       setDashboard({ metrics: defaultMetrics, applications: apps, blueprints: [] });
       setClusters([{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }]);
       setBlueprints([]);
+      setBlueprintsLoadError(error.message || 'Impossible de charger le catalogue de blueprints.');
       setIsPlanCatalog(false);
       setBlueprintPlan('starter');
       setBlueprintAccessCount(0);
@@ -917,69 +940,87 @@ function DashboardLayout() {
             <button type="submit" style={styles.primaryButton}>Générer</button>
           </form>
 
-          {!isPlanCatalog && <FilterBar filter={blueprintFilter} placeholder="Rechercher un blueprint…" />}
-          {!isPlanCatalog && <NoResults filter={blueprintFilter} />}
-          <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-            {(isPlanCatalog ? displayedBlueprints : blueprintFilter.filtered).map((bp) => {
-              const locked = isPlanCatalog ? bp.locked !== false : bp.locked === true;
-              const plan = bp.plan || bp.category;
-              return (
-                <div key={bp.id || bp.name} style={{
-                  background: 'rgba(15, 23, 42, 0.8)',
-                  border: `1px solid ${locked ? 'rgba(248,113,113,0.35)' : 'rgba(148,163,184,0.18)'}`,
-                  borderRadius: 14,
-                  padding: 18
-                }}>
-                  <div style={styles.panelTitleRow}>
-                    <strong>{bp.icon ? `${bp.icon} ` : ''}{bp.name}</strong>
-                    <span style={styles.chip}>
-                      {isPlanCatalog ? blueprintPlanLabels[plan] || plan || 'Blueprint' : bp.version || '1.0.0'}
-                    </span>
-                  </div>
-                  <p style={{ color: '#cbd5e1', margin: '12px 0 0', lineHeight: 1.6 }}>
-                    {bp.desc || bp.description || 'Blueprint disponible'}
-                  </p>
-                  {isPlanCatalog ? (
-                    locked ? (
-                      <div style={styles.lockedBlueprint}>
-                        <strong>🔒 Disponible avec le plan {plan || 'supérieur'}</strong>
-                        <button type="button" style={styles.primaryButton} onClick={() => handleCheckout(plan)}>
-                          Passer à {plan}
-                        </button>
+          {loading && !hasLoaded ? (
+            <div role="status" style={styles.emptyState}>Chargement des blueprints…</div>
+          ) : blueprintsLoadError ? (
+            <div role="alert" style={styles.errorBanner}>
+              <span>{blueprintsLoadError}</span>
+              <button type="button" style={styles.secondaryButton} onClick={loadDashboard} disabled={loading}>
+                {loading ? 'Chargement…' : 'Réessayer'}
+              </button>
+            </div>
+          ) : blueprintList.length === 0 ? (
+            <div style={styles.emptyState}>Aucun blueprint n’a été renvoyé par le catalogue backend.</div>
+          ) : (
+            <>
+              {!isPlanCatalog && <FilterBar filter={blueprintFilter} placeholder="Rechercher un blueprint…" />}
+              {!isPlanCatalog && <NoResults filter={blueprintFilter} />}
+              {isPlanCatalog && displayedBlueprints.length === 0 && (
+                <div style={styles.emptyState}>Aucun blueprint pour ce plan.</div>
+              )}
+              <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+                {(isPlanCatalog ? displayedBlueprints : blueprintFilter.filtered).map((bp) => {
+                  const locked = isPlanCatalog ? bp.locked !== false : bp.locked === true;
+                  const plan = bp.plan || bp.category;
+                  return (
+                    <div key={bp.id || bp.name} style={{
+                      background: 'rgba(15, 23, 42, 0.8)',
+                      border: `1px solid ${locked ? 'rgba(248,113,113,0.35)' : 'rgba(148,163,184,0.18)'}`,
+                      borderRadius: 14,
+                      padding: 18
+                    }}>
+                      <div style={styles.panelTitleRow}>
+                        <strong>{bp.icon ? `${bp.icon} ` : ''}{bp.name}</strong>
+                        <span style={styles.chip}>
+                          {isPlanCatalog ? blueprintPlanLabels[plan] || plan || 'Blueprint' : bp.version || '1.0.0'}
+                        </span>
                       </div>
-                    ) : (
-                      <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button type="button" style={styles.secondaryButton} onClick={() => setPreviewBlueprint(bp)}>Aperçu</button>
-                        <button
-                          type="button"
-                          style={styles.primaryButton}
-                          onClick={() => {
-                            setNewApp((prev) => ({ ...prev, blueprint: bp.name }));
-                            setIsDeployModalOpen(true);
-                          }}
-                        >
-                          Déployer
-                        </button>
-                      </div>
-                    )
-                  ) : (
-                    <>
-                      <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button type="button" style={styles.secondaryButton} onClick={() => handleBlueprintVersions(bp.id)}>Versions</button>
-                      </div>
-                      {blueprintVersions[bp.id] && (
-                        <div style={{ marginTop: 12, color: '#cbd5e1', fontSize: 12, lineHeight: 1.8 }}>
-                          {blueprintVersions[bp.id].length ? blueprintVersions[bp.id].map((version) => (
-                            <div key={version.id || version.version}>• {version.version || '1.0.0'}</div>
-                          )) : <div>Pas de version</div>}
-                        </div>
+                      <p style={{ color: '#cbd5e1', margin: '12px 0 0', lineHeight: 1.6 }}>
+                        {bp.desc || bp.description || 'Blueprint disponible'}
+                      </p>
+                      {isPlanCatalog ? (
+                        locked ? (
+                          <div style={styles.lockedBlueprint}>
+                            <strong>🔒 Disponible avec le plan {plan || 'supérieur'}</strong>
+                            <button type="button" style={styles.primaryButton} onClick={() => handleCheckout(plan)}>
+                              Passer à {plan}
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <button type="button" style={styles.secondaryButton} onClick={() => setPreviewBlueprint(bp)}>Aperçu</button>
+                            <button
+                              type="button"
+                              style={styles.primaryButton}
+                              onClick={() => {
+                                setNewApp((prev) => ({ ...prev, blueprint: bp.name }));
+                                setIsDeployModalOpen(true);
+                              }}
+                            >
+                              Déployer
+                            </button>
+                          </div>
+                        )
+                      ) : (
+                        <>
+                          <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <button type="button" style={styles.secondaryButton} onClick={() => handleBlueprintVersions(bp.id)}>Versions</button>
+                          </div>
+                          {blueprintVersions[bp.id] && (
+                            <div style={{ marginTop: 12, color: '#cbd5e1', fontSize: 12, lineHeight: 1.8 }}>
+                              {blueprintVersions[bp.id].length ? blueprintVersions[bp.id].map((version) => (
+                                <div key={version.id || version.version}>• {version.version || '1.0.0'}</div>
+                              )) : <div>Pas de version</div>}
+                            </div>
+                          )}
+                        </>
                       )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </section>
       );
     }
