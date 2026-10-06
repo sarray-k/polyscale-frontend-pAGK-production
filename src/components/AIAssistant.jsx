@@ -166,7 +166,23 @@ export default function AIAssistant({ context = {} }) {
     }
   }, [history, storageKey]);
 
-  const resetConversation = () => setHistory([WELCOME]);
+  const resetConversation = () => {
+    setHistory([WELCOME]);
+    setMessage('');
+  };
+
+  const isEmptyConversation = history.length <= 1 && history[0]?.text === WELCOME.text;
+
+  const deleteConversation = () => {
+    if (isEmptyConversation && !message) return;
+    if (!window.confirm('Supprimer tout le contenu de la conversation ?')) return;
+    resetConversation();
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {
+      // stockage indisponible, rien à nettoyer
+    }
+  };
 
   const copyMessage = async (text, index) => {
     try {
@@ -268,9 +284,19 @@ export default function AIAssistant({ context = {} }) {
     <div style={{ position: 'relative', maxWidth: 650 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <h3 style={{ margin: 0 }}>Assistant IA</h3>
-        <button type="button" onClick={resetConversation} disabled={loading} style={smallButtonStyle}>
-          Nouvelle conversation
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" onClick={resetConversation} disabled={loading} style={smallButtonStyle}>
+            Nouvelle conversation
+          </button>
+          <button
+            type="button"
+            onClick={deleteConversation}
+            disabled={loading || (isEmptyConversation && !message)}
+            style={{ ...smallButtonStyle, color: '#fca5a5', borderColor: '#7f1d1d' }}
+          >
+            🗑 Supprimer
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
@@ -332,7 +358,7 @@ export default function AIAssistant({ context = {} }) {
               handleSubmit(e);
             }
           }}
-          placeholder="Posez une question à l’assistant IA..."
+          placeholder="Posez une question à l’assistant IA… (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
           style={{
             padding: 12,
             borderRadius: 8,
@@ -345,14 +371,14 @@ export default function AIAssistant({ context = {} }) {
         />
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !message.trim()}
           style={{
-            background: loading ? '#475569' : '#14b8a6',
+            background: loading || !message.trim() ? '#475569' : '#14b8a6',
             color: '#fff',
             border: 'none',
             borderRadius: 8,
             padding: '10px 12px',
-            cursor: loading ? 'not-allowed' : 'pointer',
+            cursor: loading || !message.trim() ? 'not-allowed' : 'pointer',
             fontWeight: 600
           }}
         >

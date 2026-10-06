@@ -447,8 +447,15 @@ function DashboardLayout() {
   const [blueprintAccessCount, setBlueprintAccessCount] = useState(0);
   const [catalogPlanFilter, setCatalogPlanFilter] = useState('all');
   const [previewBlueprint, setPreviewBlueprint] = useState(null);
+  const [savedBlueprints, setSavedBlueprints] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('savedBlueprints') || '[]'); } catch { return []; }
+  });
+  const [hiddenBlueprints, setHiddenBlueprints] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hiddenBlueprints') || '[]'); } catch { return []; }
+  });
+  const [deletingClusterId, setDeletingClusterId] = useState(null);
   const [blueprintForm, setBlueprintForm] = useState({ name: '', description: '', version: '1.0.0' });
-  const [clusterForm, setClusterForm] = useState({ clusterName: '', apiServer: '', token: '', caCert: '' });
+  const [clusterForm, setClusterForm] = useState({ clusterName: '', apiServer: '', token: '', caCert: '', provider: '', region: '', namespace: '' });
   const [isClusterFormOpen, setIsClusterFormOpen] = useState(false);
   const [isRegisteringCluster, setIsRegisteringCluster] = useState(false);
   const [isTestingCluster, setIsTestingCluster] = useState(false);
@@ -664,14 +671,17 @@ function DashboardLayout() {
           clusterName,
           apiServer,
           token: clusterToken,
-          ...(clusterForm.caCert.trim() ? { caCert: clusterForm.caCert.trim() } : {})
+          ...(clusterForm.caCert.trim() ? { caCert: clusterForm.caCert.trim() } : {}),
+          ...(clusterForm.provider.trim() ? { provider: clusterForm.provider.trim() } : {}),
+          ...(clusterForm.region.trim() ? { region: clusterForm.region.trim() } : {}),
+          ...(clusterForm.namespace.trim() ? { namespace: clusterForm.namespace.trim() } : {})
         })
       });
 
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Impossible d’enregistrer le cluster');
 
-      setClusterForm({ clusterName: '', apiServer: '', token: '', caCert: '' });
+      setClusterForm({ clusterName: '', apiServer: '', token: '', caCert: '', provider: '', region: '', namespace: '' });
       setClusterTestResult(null);
       setIsClusterFormOpen(false);
       await loadDashboard();
@@ -706,7 +716,10 @@ function DashboardLayout() {
           clusterName,
           apiServer,
           token: clusterToken,
-          ...(clusterForm.caCert.trim() ? { caCert: clusterForm.caCert.trim() } : {})
+          ...(clusterForm.caCert.trim() ? { caCert: clusterForm.caCert.trim() } : {}),
+          ...(clusterForm.provider.trim() ? { provider: clusterForm.provider.trim() } : {}),
+          ...(clusterForm.region.trim() ? { region: clusterForm.region.trim() } : {}),
+          ...(clusterForm.namespace.trim() ? { namespace: clusterForm.namespace.trim() } : {})
         })
       });
       const data = await response.json().catch(() => ({}));
@@ -878,6 +891,47 @@ function DashboardLayout() {
     }
   };
 
+  const blueprintKey = (bp) => String(bp?.id ?? bp?.name);
+
+  const handleToggleSaveBlueprint = (bp) => {
+    const key = blueprintKey(bp);
+    const next = savedBlueprints.includes(key) ? savedBlueprints.filter((k) => k !== key) : [...savedBlueprints, key];
+    setSavedBlueprints(next);
+    localStorage.setItem('savedBlueprints', JSON.stringify(next));
+    showToast(next.includes(key) ? 'Blueprint sauvegardé' : 'Blueprint retiré des sauvegardes', 'success');
+  };
+
+  const handleDeleteBlueprint = (bp, list) => {
+    const key = blueprintKey(bp);
+    const next = [...hiddenBlueprints, key];
+    setHiddenBlueprints(next);
+    localStorage.setItem('hiddenBlueprints', JSON.stringify(next));
+    const remaining = list.filter((b) => blueprintKey(b) !== key);
+    const idx = list.findIndex((b) => blueprintKey(b) === key);
+    setPreviewBlueprint(remaining.length ? remaining[Math.min(idx, remaining.length - 1)] : null);
+    showToast('Blueprint supprimé', 'success');
+  };
+
+  const handleDeleteCluster = async (cluster) => {
+    const id = cluster.id || cluster._id || cluster.name || cluster.clusterName;
+    if (!id || !window.confirm(`Supprimer le cluster ${cluster.name || cluster.clusterName} ?`)) return;
+    setDeletingClusterId(id);
+    try {
+      const response = await fetch(`${API_URL}/api/clusters/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'La suppression a échoué');
+      await loadDashboard();
+      showToast('Cluster supprimé', 'success');
+    } catch (error) {
+      showToast(error.message || 'Impossible de supprimer le cluster', 'error');
+    } finally {
+      setDeletingClusterId(null);
+    }
+  };
+
   const handleDeleteApp = async (appId) => {
     if (!appId) return;
 
@@ -920,9 +974,9 @@ function DashboardLayout() {
   const clusterCards = clusters.length ? clusters : [{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }];
   const blueprintList = blueprints.length ? blueprints : (dashboard.blueprints ?? []);
   const deployableBlueprints = blueprintList.filter((blueprint) => !isPlanCatalog || blueprint.locked === false);
-  const displayedBlueprints = isPlanCatalog && catalogPlanFilter !== 'all'
+  const displayedBlueprints = (isPlanCatalog && catalogPlanFilter !== 'all'
     ? blueprintList.filter((blueprint) => (blueprint.plan || blueprint.category) === catalogPlanFilter)
-    : blueprintList;
+    : blueprintList).filter((blueprint) => !hiddenBlueprints.includes(blueprintKey(blueprint)));
   const blueprintPlanLabels = {
     starter: '🥉 Starter',
     'scale-up': '🥈 Scale-up',
@@ -1020,6 +1074,27 @@ function DashboardLayout() {
                 style={styles.fieldInput}
               />
               <input
+                type="text"
+                value={clusterForm.provider}
+                onChange={(event) => setClusterForm((prev) => ({ ...prev, provider: event.target.value }))}
+                placeholder="Fournisseur (AWS, GCP, OVH…)"
+                style={styles.fieldInput}
+              />
+              <input
+                type="text"
+                value={clusterForm.region}
+                onChange={(event) => setClusterForm((prev) => ({ ...prev, region: event.target.value }))}
+                placeholder="Région (eu-west-1…)"
+                style={styles.fieldInput}
+              />
+              <input
+                type="text"
+                value={clusterForm.namespace}
+                onChange={(event) => setClusterForm((prev) => ({ ...prev, namespace: event.target.value }))}
+                placeholder="Namespace par défaut"
+                style={styles.fieldInput}
+              />
+              <input
                 type="password"
                 autoComplete="off"
                 value={clusterForm.token}
@@ -1072,18 +1147,35 @@ function DashboardLayout() {
           <NoResults filter={clusterFilter} />
           <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             {clusterFilter.filtered.map((cluster) => (
-              <div key={cluster.id || cluster.name} style={{
+              <div key={cluster.id || cluster._id || cluster.name || cluster.clusterName} style={{
                 background: 'rgba(15, 23, 42, 0.8)',
                 border: '1px solid rgba(148,163,184,0.18)',
                 borderRadius: 14,
                 padding: 18
               }}>
                 <div style={styles.panelTitleRow}>
-                  <strong>{cluster.name || 'Cluster'}</strong>
-                  <span style={styles.chip}>Healthy</span>
+                  <strong>{cluster.name || cluster.clusterName || 'Cluster'}</strong>
+                  <span style={styles.chip}>{cluster.status || 'Healthy'}</span>
                 </div>
                 <div style={{ color: '#cbd5e1', marginTop: 10, lineHeight: 1.6 }}>
                   <div>API: {cluster.apiServer || 'https://demo-cluster.example.com'}</div>
+                  {cluster.id && <div>ID: {cluster.id}</div>}
+                  {cluster.provider && <div>Fournisseur: {cluster.provider}</div>}
+                  {cluster.region && <div>Région: {cluster.region}</div>}
+                  {cluster.namespace && <div>Namespace: {cluster.namespace}</div>}
+                  {(cluster.nodes ?? cluster.nodeCount) !== undefined && <div>Nœuds: {cluster.nodes ?? cluster.nodeCount}</div>}
+                  {cluster.version && <div>Version: {cluster.version}</div>}
+                  {cluster.createdAt && <div>Créé le: {new Date(cluster.createdAt).toLocaleDateString()}</div>}
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    style={styles.secondaryButton}
+                    disabled={deletingClusterId === (cluster.id || cluster._id || cluster.name || cluster.clusterName)}
+                    onClick={() => handleDeleteCluster(cluster)}
+                  >
+                    {deletingClusterId === (cluster.id || cluster._id || cluster.name || cluster.clusterName) ? 'Suppression…' : '🗑 Supprimer'}
+                  </button>
                 </div>
               </div>
             ))}
@@ -1794,7 +1886,7 @@ function DashboardLayout() {
           </div>
         )}
 
-        {previewBlueprint && (
+        {previewBlueprint && (() => { const previewIndex = displayedBlueprints.findIndex((b) => blueprintKey(b) === blueprintKey(previewBlueprint)); return (
           <div style={styles.modalBackdrop} onClick={() => setPreviewBlueprint(null)}>
             <div style={styles.modalCard} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
               <div style={styles.panelTitleRow}>
@@ -1807,6 +1899,12 @@ function DashboardLayout() {
                 {previewBlueprint.desc || previewBlueprint.description || 'Aucune description disponible.'}
               </p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <button type="button" style={styles.secondaryButton} disabled={previewIndex <= 0} onClick={() => setPreviewBlueprint(displayedBlueprints[previewIndex - 1])}>← Précédent</button>
+                <button type="button" style={styles.secondaryButton} disabled={previewIndex < 0 || previewIndex >= displayedBlueprints.length - 1} onClick={() => setPreviewBlueprint(displayedBlueprints[previewIndex + 1])}>Suivant →</button>
+                <button type="button" style={styles.secondaryButton} onClick={() => handleToggleSaveBlueprint(previewBlueprint)}>
+                  {savedBlueprints.includes(blueprintKey(previewBlueprint)) ? '★ Sauvegardé' : '☆ Sauvegarder'}
+                </button>
+                <button type="button" style={styles.secondaryButton} onClick={() => handleDeleteBlueprint(previewBlueprint, displayedBlueprints)}>🗑 Supprimer</button>
                 <button type="button" style={styles.secondaryButton} onClick={() => setPreviewBlueprint(null)}>Fermer</button>
                 <button
                   type="button"
@@ -1822,7 +1920,7 @@ function DashboardLayout() {
               </div>
             </div>
           </div>
-        )}
+        ); })()}
 
         <footer style={styles.footerBar}>
           <span>© 2026 PolyScale</span>
