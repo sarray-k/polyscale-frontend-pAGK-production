@@ -9,6 +9,7 @@ import Pricing from './components/Pricing.jsx';
 import PromoPage from './components/PromoPage.jsx';
 import FAQ from './components/FAQ.jsx';
 import BlueprintEditor from './components/BlueprintEditor.jsx';
+import MetricsChart from './components/MetricsChart.jsx';
 import FilterBar, { NoResults, useListFilter } from './components/FilterBar.jsx';
 import AIAssistant from './components/AIAssistant.jsx';
 import Help from './components/Help.jsx';
@@ -61,6 +62,20 @@ const userStatus = (u) => u.status || 'active';
 const userSorters = { email: { label: 'Email (A→Z)', compare: byText((u) => u.email) }, role: { label: 'Rôle', compare: byText((u) => u.role) } };
 const auditText = (e) => `${e.event} ${e.tenant} ${e.user_id} ${e.details ? JSON.stringify(e.details) : ''}`;
 const auditSorters = { event: { label: 'Événement (A→Z)', compare: byText((e) => e.event) } };
+const metricValue = (value) => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+
+function recordMetricSample(setHistory, appId, data) {
+  const sample = {
+    timestamp: Date.now(),
+    cpu: metricValue(data.cpu),
+    memory: metricValue(data.memory),
+    latency: metricValue(data.latency)
+  };
+  setHistory((history) => ({
+    ...history,
+    [appId]: [...(history[appId] || []), sample].slice(-40)
+  }));
+}
 
 const planFeatures = [
   '1 cluster',
@@ -213,12 +228,20 @@ function DashboardLayout() {
   const [adminAudit, setAdminAudit] = useState([]);
   const [promotions, setPromotions] = useState([]);
   const [appMetricsMap, setAppMetricsMap] = useState({});
+  const [appMetricsHistory, setAppMetricsHistory] = useState({});
   const [appMetricsErrors, setAppMetricsErrors] = useState({});
   const [blueprintVersions, setBlueprintVersions] = useState({});
+  const [isPlanCatalog, setIsPlanCatalog] = useState(false);
+  const [blueprintPlan, setBlueprintPlan] = useState('starter');
+  const [blueprintAccessCount, setBlueprintAccessCount] = useState(0);
+  const [catalogPlanFilter, setCatalogPlanFilter] = useState('all');
+  const [previewBlueprint, setPreviewBlueprint] = useState(null);
   const [blueprintForm, setBlueprintForm] = useState({ name: '', description: '', version: '1.0.0' });
   const [clusterForm, setClusterForm] = useState({ clusterName: '', apiServer: '', token: '', caCert: '' });
   const [isClusterFormOpen, setIsClusterFormOpen] = useState(false);
   const [isRegisteringCluster, setIsRegisteringCluster] = useState(false);
+  const [isTestingCluster, setIsTestingCluster] = useState(false);
+  const [clusterTestResult, setClusterTestResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -274,7 +297,12 @@ function DashboardLayout() {
       const adminUsersData = adminUsersRes.status === 'fulfilled' ? await adminUsersRes.value.json().catch(() => []) : [];
       const adminAuditData = adminAuditRes.status === 'fulfilled' ? await adminAuditRes.value.json().catch(() => []) : [];
 
-      const nextBlueprints = blueprintsData.length ? blueprintsData : (overviewData.blueprints || []);
+      const isCatalogResponse = !Array.isArray(blueprintsData) && Array.isArray(blueprintsData?.blueprints);
+      const catalogBlueprints = isCatalogResponse ? blueprintsData.blueprints : [];
+      const responseAccessCount = Number(blueprintsData?.count);
+      const nextBlueprints = isCatalogResponse
+        ? catalogBlueprints
+        : (Array.isArray(blueprintsData) && blueprintsData.length ? blueprintsData : (overviewData.blueprints || []));
       const metrics = [
         { label: 'Active clusters', value: String(overviewData.metrics?.activeClusters ?? clustersData.length ?? 0), delta: '+0%', tone: 'cyan' },
         { label: 'Deployments', value: String(overviewData.metrics?.deployments ?? applicationsData.length ?? 0), delta: '+0%', tone: 'green' },
@@ -289,6 +317,13 @@ function DashboardLayout() {
       });
       setClusters(clustersData.length ? clustersData : [{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }]);
       setBlueprints(nextBlueprints);
+      setIsPlanCatalog(isCatalogResponse);
+      setBlueprintPlan(isCatalogResponse ? blueprintsData.plan || 'starter' : 'starter');
+      setBlueprintAccessCount(isCatalogResponse
+        ? Number.isFinite(responseAccessCount)
+          ? responseAccessCount
+          : catalogBlueprints.filter((blueprint) => blueprint.locked === false).length
+        : nextBlueprints.length);
       setSocialStats(socialStatsData);
       setSocialLinks(Array.isArray(socialLinksData) ? socialLinksData : []);
       setTemplates(Array.isArray(templatesData) && templatesData.length ? templatesData : defaultTemplates);
@@ -297,13 +332,18 @@ function DashboardLayout() {
       setAdminAudit(Array.isArray(adminAuditData) ? adminAuditData : []);
       setNewApp((prev) => ({
         ...prev,
-        blueprint: prev.blueprint || nextBlueprints[0]?.name || ''
+        blueprint: nextBlueprints.find((blueprint) => (
+          (!isCatalogResponse || blueprint.locked === false) && blueprint.name === prev.blueprint
+        ))?.name || nextBlueprints.find((blueprint) => !isCatalogResponse || blueprint.locked === false)?.name || ''
       }));
     } catch (error) {
       setLoadError('Chargement impossible : le serveur ne répond pas.');
       setDashboard({ metrics: defaultMetrics, applications: apps, blueprints: [] });
       setClusters([{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }]);
       setBlueprints([]);
+      setIsPlanCatalog(false);
+      setBlueprintPlan('starter');
+      setBlueprintAccessCount(0);
       setSocialStats({ totalLinks: 0, totalClicks: 0, totalConversions: 0, estimatedReward: 0 });
       setSocialLinks([]);
       setTemplates(defaultTemplates);
@@ -399,6 +439,7 @@ function DashboardLayout() {
       if (!response.ok) throw new Error(data.error || 'Impossible d’enregistrer le cluster');
 
       setClusterForm({ clusterName: '', apiServer: '', token: '', caCert: '' });
+      setClusterTestResult(null);
       setIsClusterFormOpen(false);
       await loadDashboard();
       showToast('Cluster enregistré', 'success');
@@ -406,6 +447,51 @@ function DashboardLayout() {
       showToast(error.message || 'Impossible d’enregistrer le cluster', 'error');
     } finally {
       setIsRegisteringCluster(false);
+    }
+  };
+
+  const handleTestClusterConnection = async () => {
+    const clusterName = clusterForm.clusterName.trim();
+    const apiServer = clusterForm.apiServer.trim();
+    const clusterToken = clusterForm.token.trim();
+
+    if (!clusterName || !apiServer || !clusterToken) {
+      showToast('Nom, URL de l’API et token sont requis pour tester la connexion', 'error');
+      return;
+    }
+
+    setIsTestingCluster(true);
+    setClusterTestResult(null);
+    try {
+      const response = await fetch(`${API_URL}/api/clusters/test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          clusterName,
+          apiServer,
+          token: clusterToken,
+          ...(clusterForm.caCert.trim() ? { caCert: clusterForm.caCert.trim() } : {})
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.success === false || data.connected === false) {
+        throw new Error(data.error || data.message || 'La connexion au cluster a échoué');
+      }
+
+      setClusterTestResult({
+        success: true,
+        message: data.message || 'Connexion au cluster réussie. Vous pouvez l’enregistrer.'
+      });
+    } catch (error) {
+      setClusterTestResult({
+        success: false,
+        message: error.message || 'Impossible de tester la connexion au cluster'
+      });
+    } finally {
+      setIsTestingCluster(false);
     }
   };
 
@@ -463,6 +549,7 @@ function DashboardLayout() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Impossible de charger les métriques');
       setAppMetricsMap((prev) => ({ ...prev, [appId]: data }));
+      recordMetricSample(setAppMetricsHistory, appId, data);
       setAppMetricsErrors((prev) => ({ ...prev, [appId]: null }));
     } catch (error) {
       setAppMetricsErrors((prev) => ({
@@ -524,6 +611,10 @@ function DashboardLayout() {
     if (!name || !blueprint) {
       return;
     }
+    if (!deployableBlueprints.some((available) => available.name === blueprint)) {
+      showToast('Ce blueprint n’est pas disponible avec votre plan.', 'error');
+      return;
+    }
 
     setIsSubmitting(true);
 
@@ -543,7 +634,7 @@ function DashboardLayout() {
         throw new Error(data.error || 'Le déploiement a échoué');
       }
 
-      setNewApp({ name: '', blueprint: blueprints[0]?.name || '' });
+      setNewApp({ name: '', blueprint: deployableBlueprints[0]?.name || '' });
       setIsDeployModalOpen(false);
       await loadDashboard();
       showToast('Application créée', 'success');
@@ -595,6 +686,15 @@ function DashboardLayout() {
   const liveApps = dashboard.applications ?? apps;
   const clusterCards = clusters.length ? clusters : [{ name: 'prod-eu-west', apiServer: 'https://demo-cluster.example.com' }];
   const blueprintList = blueprints.length ? blueprints : (dashboard.blueprints ?? []);
+  const deployableBlueprints = blueprintList.filter((blueprint) => !isPlanCatalog || blueprint.locked === false);
+  const displayedBlueprints = isPlanCatalog && catalogPlanFilter !== 'all'
+    ? blueprintList.filter((blueprint) => (blueprint.plan || blueprint.category) === catalogPlanFilter)
+    : blueprintList;
+  const blueprintPlanLabels = {
+    starter: '🥉 Starter',
+    'scale-up': '🥈 Scale-up',
+    enterprise: '🥇 Enterprise'
+  };
 
   const appFilter = useListFilter(liveApps, { getText: appText, getStatus: appStatus, sorters: appSorters });
   const clusterFilter = useListFilter(clusterCards, { getText: clusterText, sorters: clusterSorters });
@@ -628,6 +728,7 @@ function DashboardLayout() {
             if (!response.ok) throw new Error(data.error || 'Impossible de charger les métriques');
             if (isActive) {
               setAppMetricsMap((prev) => ({ ...prev, [app.id]: data }));
+              recordMetricSample(setAppMetricsHistory, app.id, data);
               setAppMetricsErrors((prev) => ({ ...prev, [app.id]: null }));
             }
           } catch (error) {
@@ -668,14 +769,20 @@ function DashboardLayout() {
               <input
                 type="text"
                 value={clusterForm.clusterName}
-                onChange={(event) => setClusterForm((prev) => ({ ...prev, clusterName: event.target.value }))}
+                onChange={(event) => {
+                  setClusterTestResult(null);
+                  setClusterForm((prev) => ({ ...prev, clusterName: event.target.value }));
+                }}
                 placeholder="Nom du cluster"
                 style={styles.fieldInput}
               />
               <input
                 type="url"
                 value={clusterForm.apiServer}
-                onChange={(event) => setClusterForm((prev) => ({ ...prev, apiServer: event.target.value }))}
+                onChange={(event) => {
+                  setClusterTestResult(null);
+                  setClusterForm((prev) => ({ ...prev, apiServer: event.target.value }));
+                }}
                 placeholder="https://api.mon-cluster:6443"
                 style={styles.fieldInput}
               />
@@ -683,20 +790,49 @@ function DashboardLayout() {
                 type="password"
                 autoComplete="off"
                 value={clusterForm.token}
-                onChange={(event) => setClusterForm((prev) => ({ ...prev, token: event.target.value }))}
+                onChange={(event) => {
+                  setClusterTestResult(null);
+                  setClusterForm((prev) => ({ ...prev, token: event.target.value }));
+                }}
                 placeholder="Token du compte de service"
                 style={styles.fieldInput}
               />
               <textarea
                 value={clusterForm.caCert}
-                onChange={(event) => setClusterForm((prev) => ({ ...prev, caCert: event.target.value }))}
+                onChange={(event) => {
+                  setClusterTestResult(null);
+                  setClusterForm((prev) => ({ ...prev, caCert: event.target.value }));
+                }}
                 placeholder="Certificat CA (PEM, optionnel – cluster auto-signé)"
                 rows={3}
                 style={{ ...styles.fieldInput, gridColumn: '1 / -1', fontFamily: 'monospace' }}
               />
-              <button type="submit" style={styles.primaryButton} disabled={isRegisteringCluster}>
-                {isRegisteringCluster ? 'Vérification…' : 'Enregistrer'}
-              </button>
+              <div style={{ gridColumn: '1 / -1', display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                <button
+                  type="button"
+                  style={styles.secondaryButton}
+                  onClick={handleTestClusterConnection}
+                  disabled={isTestingCluster || isRegisteringCluster}
+                >
+                  {isTestingCluster ? 'Test de connexion…' : 'Tester la connexion'}
+                </button>
+                <button type="submit" style={styles.primaryButton} disabled={isRegisteringCluster || isTestingCluster}>
+                  {isRegisteringCluster ? 'Enregistrement…' : 'Enregistrer'}
+                </button>
+              </div>
+              {clusterTestResult && (
+                <div
+                  role={clusterTestResult.success ? 'status' : 'alert'}
+                  style={{
+                    ...styles.clusterTestResult,
+                    color: clusterTestResult.success ? '#86efac' : '#fecaca',
+                    borderColor: clusterTestResult.success ? 'rgba(34,197,94,0.35)' : 'rgba(248,113,113,0.4)',
+                    background: clusterTestResult.success ? 'rgba(22,101,52,0.15)' : 'rgba(127,29,29,0.18)'
+                  }}
+                >
+                  {clusterTestResult.success ? '✓ ' : '⚠ '}{clusterTestResult.message}
+                </div>
+              )}
             </form>
           )}
           <FilterBar filter={clusterFilter} placeholder="Rechercher un cluster…" />
@@ -730,6 +866,32 @@ function DashboardLayout() {
             <h3 style={styles.panelTitle}>Blueprints</h3>
           </div>
 
+          {isPlanCatalog && (
+            <>
+              <p style={{ color: '#cbd5e1', margin: '0 0 16px' }}>
+                {blueprintList.length} blueprints visibles · {blueprintAccessCount} disponibles avec le plan {blueprintPlan}.
+              </p>
+              <div role="group" aria-label="Filtrer les blueprints par plan" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
+                {[
+                  ['all', `Tous (${blueprintList.length})`],
+                  ['starter', `🥉 Starter (${blueprintList.filter((bp) => (bp.plan || bp.category) === 'starter').length})`],
+                  ['scale-up', `🥈 Scale-up (${blueprintList.filter((bp) => (bp.plan || bp.category) === 'scale-up').length})`],
+                  ['enterprise', `🥇 Enterprise (${blueprintList.filter((bp) => (bp.plan || bp.category) === 'enterprise').length})`]
+                ].map(([plan, label]) => (
+                  <button
+                    key={plan}
+                    type="button"
+                    aria-pressed={catalogPlanFilter === plan}
+                    onClick={() => setCatalogPlanFilter(plan)}
+                    style={catalogPlanFilter === plan ? styles.catalogFilterActive : styles.catalogFilter}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
           <form onSubmit={handleGenerateBlueprint} style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginBottom: 20 }}>
             <input
               type="text"
@@ -755,35 +917,68 @@ function DashboardLayout() {
             <button type="submit" style={styles.primaryButton}>Générer</button>
           </form>
 
-          <FilterBar filter={blueprintFilter} placeholder="Rechercher un blueprint…" />
-          <NoResults filter={blueprintFilter} />
+          {!isPlanCatalog && <FilterBar filter={blueprintFilter} placeholder="Rechercher un blueprint…" />}
+          {!isPlanCatalog && <NoResults filter={blueprintFilter} />}
           <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-            {blueprintFilter.filtered.map((bp) => (
-              <div key={bp.id || bp.name} style={{
-                background: 'rgba(15, 23, 42, 0.8)',
-                border: '1px solid rgba(148,163,184,0.18)',
-                borderRadius: 14,
-                padding: 18
-              }}>
-                <div style={styles.panelTitleRow}>
-                  <strong>{bp.name}</strong>
-                  <span style={styles.chip}>{bp.version || '1.0.0'}</span>
-                </div>
-                <p style={{ color: '#cbd5e1', margin: '12px 0 0', lineHeight: 1.6 }}>
-                  {bp.description || 'Blueprint disponible'}
-                </p>
-                <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button style={styles.secondaryButton} onClick={() => handleBlueprintVersions(bp.id)}>Versions</button>
-                </div>
-                {blueprintVersions[bp.id] && (
-                  <div style={{ marginTop: 12, color: '#cbd5e1', fontSize: 12, lineHeight: 1.8 }}>
-                    {blueprintVersions[bp.id].length ? blueprintVersions[bp.id].map((version) => (
-                      <div key={version.id || version.version}>• {version.version || '1.0.0'}</div>
-                    )) : <div>Pas de version</div>}
+            {(isPlanCatalog ? displayedBlueprints : blueprintFilter.filtered).map((bp) => {
+              const locked = isPlanCatalog ? bp.locked !== false : bp.locked === true;
+              const plan = bp.plan || bp.category;
+              return (
+                <div key={bp.id || bp.name} style={{
+                  background: 'rgba(15, 23, 42, 0.8)',
+                  border: `1px solid ${locked ? 'rgba(248,113,113,0.35)' : 'rgba(148,163,184,0.18)'}`,
+                  borderRadius: 14,
+                  padding: 18
+                }}>
+                  <div style={styles.panelTitleRow}>
+                    <strong>{bp.icon ? `${bp.icon} ` : ''}{bp.name}</strong>
+                    <span style={styles.chip}>
+                      {isPlanCatalog ? blueprintPlanLabels[plan] || plan || 'Blueprint' : bp.version || '1.0.0'}
+                    </span>
                   </div>
-                )}
-              </div>
-            ))}
+                  <p style={{ color: '#cbd5e1', margin: '12px 0 0', lineHeight: 1.6 }}>
+                    {bp.desc || bp.description || 'Blueprint disponible'}
+                  </p>
+                  {isPlanCatalog ? (
+                    locked ? (
+                      <div style={styles.lockedBlueprint}>
+                        <strong>🔒 Disponible avec le plan {plan || 'supérieur'}</strong>
+                        <button type="button" style={styles.primaryButton} onClick={() => handleCheckout(plan)}>
+                          Passer à {plan}
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button type="button" style={styles.secondaryButton} onClick={() => setPreviewBlueprint(bp)}>Aperçu</button>
+                        <button
+                          type="button"
+                          style={styles.primaryButton}
+                          onClick={() => {
+                            setNewApp((prev) => ({ ...prev, blueprint: bp.name }));
+                            setIsDeployModalOpen(true);
+                          }}
+                        >
+                          Déployer
+                        </button>
+                      </div>
+                    )
+                  ) : (
+                    <>
+                      <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button type="button" style={styles.secondaryButton} onClick={() => handleBlueprintVersions(bp.id)}>Versions</button>
+                      </div>
+                      {blueprintVersions[bp.id] && (
+                        <div style={{ marginTop: 12, color: '#cbd5e1', fontSize: 12, lineHeight: 1.8 }}>
+                          {blueprintVersions[bp.id].length ? blueprintVersions[bp.id].map((version) => (
+                            <div key={version.id || version.version}>• {version.version || '1.0.0'}</div>
+                          )) : <div>Pas de version</div>}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </section>
       );
@@ -1058,6 +1253,7 @@ function DashboardLayout() {
           <div style={{ display: 'grid', gap: 16 }}>
             {liveApps.map((app) => {
               const m = appMetricsMap[app.id];
+              const history = appMetricsHistory[app.id] || [];
               return (
                 <div key={app.id || app.name} style={{
                   background: 'rgba(15, 23, 42, 0.8)',
@@ -1074,10 +1270,10 @@ function DashboardLayout() {
                       {appMetricsErrors[app.id]}
                     </div>
                   )}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: 12 }}>
-                    <div style={{ background: 'rgba(2,8,23,0.6)', borderRadius: 10, padding: 12 }}><div style={{ color: '#94a3b8', fontSize: 12 }}>CPU / limite</div><strong>{m ? Number(m.cpu).toFixed(1) : '—'}%</strong></div>
-                    <div style={{ background: 'rgba(2,8,23,0.6)', borderRadius: 10, padding: 12 }}><div style={{ color: '#94a3b8', fontSize: 12 }}>Mémoire / limite</div><strong>{m ? Number(m.memory).toFixed(1) : '—'}%</strong></div>
-                    <div style={{ background: 'rgba(2,8,23,0.6)', borderRadius: 10, padding: 12 }}><div style={{ color: '#94a3b8', fontSize: 12 }}>Latence HTTP</div><strong>{m?.latency == null ? '—' : `${Number(m.latency).toFixed(0)} ms`}</strong></div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                    <MetricsChart title="CPU / limite" unit="%" color="#38bdf8" points={history} valueKey="cpu" fixedMax={100} />
+                    <MetricsChart title="Mémoire / limite" unit="%" color="#a78bfa" points={history} valueKey="memory" fixedMax={100} />
+                    <MetricsChart title="Latence HTTP" unit="ms" color="#34d399" points={history} valueKey="latency" />
                   </div>
                   <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 10 }}>
                     {m?.measuredAt
@@ -1436,23 +1632,53 @@ function DashboardLayout() {
                     style={styles.fieldInput}
                   >
                     <option value="">Select blueprint</option>
-                    {blueprints.map((bp) => (
+                    {deployableBlueprints.map((bp) => (
                       <option key={bp.id || bp.name} value={bp.name}>{bp.name}</option>
                     ))}
                   </select>
                 </div>
 
-                {blueprints.length === 0 && (
-                  <div style={styles.emptyState}>No blueprint available yet. Create one first from the blueprint library.</div>
+                {deployableBlueprints.length === 0 && (
+                  <div style={styles.emptyState}>Aucun blueprint déployable pour le moment. Choisissez un plan supérieur ou créez un blueprint.</div>
                 )}
 
                 <div style={styles.modalActions}>
                   <button type="button" style={styles.secondaryButton} onClick={() => setIsDeployModalOpen(false)}>Cancel</button>
-                  <button type="submit" style={styles.primaryButton} disabled={isSubmitting || blueprints.length === 0}>
+                  <button type="submit" style={styles.primaryButton} disabled={isSubmitting || deployableBlueprints.length === 0}>
                     {isSubmitting ? 'Deploying...' : 'Deploy app'}
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {previewBlueprint && (
+          <div style={styles.modalBackdrop} onClick={() => setPreviewBlueprint(null)}>
+            <div style={styles.modalCard} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+              <div style={styles.panelTitleRow}>
+                <h3 style={styles.panelTitle}>
+                  {previewBlueprint.icon ? `${previewBlueprint.icon} ` : ''}{previewBlueprint.name}
+                </h3>
+                <button type="button" style={styles.ghostButton} onClick={() => setPreviewBlueprint(null)}>Fermer</button>
+              </div>
+              <p style={{ color: '#cbd5e1', lineHeight: 1.6 }}>
+                {previewBlueprint.desc || previewBlueprint.description || 'Aucune description disponible.'}
+              </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <button type="button" style={styles.secondaryButton} onClick={() => setPreviewBlueprint(null)}>Fermer</button>
+                <button
+                  type="button"
+                  style={styles.primaryButton}
+                  onClick={() => {
+                    setNewApp((prev) => ({ ...prev, blueprint: previewBlueprint.name }));
+                    setPreviewBlueprint(null);
+                    setIsDeployModalOpen(true);
+                  }}
+                >
+                  Déployer
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1579,6 +1805,41 @@ const styles = {
     padding: '12px 18px',
     fontWeight: 600,
     cursor: 'pointer'
+  },
+  catalogFilter: {
+    background: 'rgba(148,163,184,0.08)',
+    color: '#cbd5e1',
+    border: '1px solid rgba(148,163,184,0.2)',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  catalogFilterActive: {
+    background: 'rgba(76,201,240,0.16)',
+    color: '#7ae7ff',
+    border: '1px solid rgba(122,231,255,0.55)',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontWeight: 700,
+    cursor: 'pointer'
+  },
+  clusterTestResult: {
+    gridColumn: '1 / -1',
+    padding: '10px 12px',
+    border: '1px solid',
+    borderRadius: 10,
+    fontSize: 13,
+    lineHeight: 1.5
+  },
+  lockedBlueprint: {
+    display: 'grid',
+    gap: 12,
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 10,
+    background: 'rgba(127,29,29,0.18)',
+    color: '#fecaca'
   },
   dangerButton: {
     background: 'rgba(239, 68, 68, 0.12)',

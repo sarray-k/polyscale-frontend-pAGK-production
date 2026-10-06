@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import BlueprintImport from './BlueprintImport.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -75,7 +76,7 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
   const hasExtendedBrief = user?.role === 'admin' || EXTENDED_PLANS.includes(String(user?.status || '').toLowerCase());
   const MAX_PROMPT_CHARS = hasExtendedBrief ? EXTENDED_PROMPT_CHARS : BASE_PROMPT_CHARS;
   const [form, setForm] = useState({ name: 'payment-saas', description: '', version: '1.0.0' });
-  const [file, setFile] = useState(null);
+  const [activeEditorTab, setActiveEditorTab] = useState('editor');
   const [menuOpen, setMenuOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState(null);
@@ -97,7 +98,6 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
   const [isRefining, setIsRefining] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [isCreating, setIsCreating] = useState(false);
-  const fileInputRef = useRef(null);
   const [lastRefine, setLastRefine] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
@@ -234,39 +234,24 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
 
     setIsCreating(true);
     try {
-      let res;
-      if (file) {
-        const body = new FormData();
-        body.append('name', name);
-        body.append('description', form.description.trim());
-        body.append('chart', file);
-        res = await fetch(`${API_URL}/api/blueprints/upload`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body
-        });
-      } else {
-        res = await fetch(`${API_URL}/api/blueprints/generate`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            name,
-            description: form.description.trim(),
-            version: form.version.trim() || '1.0.0'
-          })
-        });
-      }
+      const res = await fetch(`${API_URL}/api/blueprints/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name,
+          description: form.description.trim(),
+          version: form.version.trim() || '1.0.0'
+        })
+      });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Création du blueprint impossible');
 
       showToast(`✅ Blueprint « ${data.name || name} » ${data.version || ''} créé`, 'success');
       setForm({ name: '', description: '', version: '1.0.0' });
-      setFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
       onBlueprintCreated?.();
     } catch (error) {
       showToast(`Erreur : ${describeError(error)}`, 'error');
@@ -622,6 +607,26 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
         </div>
       </div>
 
+      <div role="group" aria-label="Fonctions des blueprints" style={styles.editorTabs}>
+        <button
+          type="button"
+          aria-pressed={activeEditorTab === 'editor'}
+          onClick={() => setActiveEditorTab('editor')}
+          style={activeEditorTab === 'editor' ? styles.editorTabActive : styles.editorTab}
+        >
+          Éditeur
+        </button>
+        <button
+          type="button"
+          aria-pressed={activeEditorTab === 'import'}
+          onClick={() => setActiveEditorTab('import')}
+          style={activeEditorTab === 'import' ? styles.editorTabActive : styles.editorTab}
+        >
+          Import
+        </button>
+      </div>
+
+      <div style={{ display: activeEditorTab === 'editor' ? 'block' : 'none' }}>
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12, maxWidth: 500 }}>
         <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom" style={styles.input} />
         <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description" style={styles.input} rows={4} />
@@ -629,14 +634,9 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
           value={form.version}
           onChange={(e) => setForm({ ...form, version: e.target.value })}
           placeholder="Version"
-          disabled={Boolean(file)}
-          title={file ? 'La version est lue dans le Chart.yaml du fichier' : undefined}
           style={styles.input}
         />
-        <label style={{ display: 'grid', gap: 8 }}>
-          <span>Helm chart (.tgz) — facultatif, sans fichier un blueprint vide est généré</span>
-          <input ref={fileInputRef} type="file" accept=".tgz" onChange={(e) => setFile(e.target.files[0] || null)} style={styles.fileInput} />
-        </label>
+        <small style={{ color: '#94a3b8' }}>Pour importer un Helm chart, utilisez l’onglet Import.</small>
         <button type="submit" disabled={isCreating} style={styles.button}>
           {isCreating ? 'Création…' : 'Créer le blueprint'}
         </button>
@@ -925,6 +925,9 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
           </div>
         </div>
       )}
+      </div>
+
+      {activeEditorTab === 'import' && <BlueprintImport onBlueprintCreated={onBlueprintCreated} />}
     </div>
   );
 }
@@ -957,6 +960,25 @@ const styles = {
     position: 'relative'
   },
   title: { margin: 0, fontSize: 18 },
+  editorTabs: { display: 'flex', gap: 8, marginBottom: 18, borderBottom: '1px solid #334155' },
+  editorTab: {
+    padding: '9px 14px',
+    border: '1px solid transparent',
+    borderBottom: '2px solid transparent',
+    background: 'transparent',
+    color: '#94a3b8',
+    cursor: 'pointer',
+    fontWeight: 600
+  },
+  editorTabActive: {
+    padding: '9px 14px',
+    border: '1px solid transparent',
+    borderBottom: '2px solid #38bdf8',
+    background: 'rgba(56,189,248,0.08)',
+    color: '#7ae7ff',
+    cursor: 'pointer',
+    fontWeight: 700
+  },
   exportWrap: { position: 'relative' },
   exportButton: {
     display: 'inline-flex',
@@ -998,9 +1020,8 @@ const styles = {
   },
   exportIcon: { fontSize: 20, flexShrink: 0 },
   menuTitle: { display: 'block', fontSize: 13, fontWeight: 700, marginBottom: 2 },
-  menuMeta: { display: 'block', fontSize: 11, color: '#94a3b8' },
+  menuMeta: { display: 'block', fontSize: 11, color: '#94a3b8'   },
   input: { padding: '10px 12px', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#fff' },
-  fileInput: { color: '#fff' },
   button: { background: '#8b5cf6', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 12px', cursor: 'pointer' },
   aiPanel: {
     marginTop: 18,
