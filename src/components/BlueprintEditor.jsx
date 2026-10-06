@@ -1,14 +1,82 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import BlueprintImport from './BlueprintImport.jsx';
 
-const API_URL_EXPORT = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-export default function BlueprintEditor() {
-  const { token } = useAuth();
+const BUILD_STAGES = [
+  { from: 0, label: 'Analyse du brief…' },
+  { from: 20, label: 'Rédaction du code…' },
+  { from: 60, label: 'Mise en page et styles…' },
+  { from: 90, label: 'Finalisation…' }
+];
+
+const SKELETON_BLOCKS = [
+  { from: 5, height: 28, label: 'Header' },
+  { from: 20, height: 90, label: 'Hero' },
+  { from: 45, height: 60, label: 'Sections' },
+  { from: 65, height: 60, label: 'Contenu' },
+  { from: 85, height: 28, label: 'Footer' }
+];
+
+const REFINE_SUGGESTIONS = [
+  'Rends le header plus sombre',
+  'Ajoute une section pricing',
+  'Ajoute une section témoignages',
+  'Rends le design responsive mobile',
+  'Ajoute un formulaire de contact',
+  'Améliore les couleurs et le contraste'
+];
+
+const BASE_PROMPT_CHARS = 4000;
+const EXTENDED_PROMPT_CHARS = Number(import.meta.env.VITE_MAX_PROMPT_CHARS) || 24000;
+const EXTENDED_PLANS = ['scale-up', 'enterprise'];
+const TEXT_FILE_PATTERN = /\.(html?|css|js|jsx|ts|tsx|json|md|txt|yml|yaml|xml|csv|svg)$/i;
+
+const STATUS_MESSAGES = {
+  401: 'Session expirée, reconnectez-vous.',
+  429: 'Trop de demandes, patientez quelques instants.',
+  503: 'Le service IA n’est pas configuré sur le serveur.'
+};
+
+async function readSse(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop();
+    for (const block of blocks) {
+      const event = /^event: (.+)$/m.exec(block)?.[1];
+      const data = /^data: (.+)$/m.exec(block)?.[1];
+      if (event && data) {
+        try {
+          onEvent(event, JSON.parse(data));
+        } catch {
+          // bloc SSE illisible, ignoré
+        }
+      }
+    }
+  }
+}
+
+function describeError(error, status) {
+  if (error?.name === 'AbortError') return 'Génération annulée.';
+  if (error instanceof TypeError) return 'Serveur injoignable (réseau ou CORS).';
+  return STATUS_MESSAGES[status] || error?.message || 'Erreur inconnue';
+}
+
+export default function BlueprintEditor({ onBlueprintCreated }) {
+  const { token, user } = useAuth();
   const { showToast } = useToast();
+  const hasExtendedBrief = user?.role === 'admin' || EXTENDED_PLANS.includes(String(user?.status || '').toLowerCase());
+  const MAX_PROMPT_CHARS = hasExtendedBrief ? EXTENDED_PROMPT_CHARS : BASE_PROMPT_CHARS;
   const [form, setForm] = useState({ name: 'payment-saas', description: '', version: '1.0.0' });
-  const [file, setFile] = useState(null);
+  const [activeEditorTab, setActiveEditorTab] = useState('editor');
   const [menuOpen, setMenuOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState(null);
@@ -18,9 +86,25 @@ export default function BlueprintEditor() {
   const [aiLanguage, setAiLanguage] = useState('fr');
   const [aiTheme, setAiTheme] = useState('minimal');
   const [aiMultiPage, setAiMultiPage] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [showBuild, setShowBuild] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const abortRef = useRef(null);
+  const streamingRef = useRef(false);
+  const [isRefining, setIsRefining] = useState(false);
+  const [attachments, setAttachments] = useState([]);
+  const [isCreating, setIsCreating] = useState(false);
+  const [lastRefine, setLastRefine] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [refineInstruction, setRefineInstruction] = useState('');
   const [activeFileId, setActiveFileId] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [contents, setContents] = useState({});
 
   useEffect(() => {
     if (!token) return;
@@ -29,88 +113,297 @@ export default function BlueprintEditor() {
 
   const fetchFiles = async () => {
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/code/files`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await fetch(`${API_URL}/api/code/files`, { headers });
       if (!res.ok) return;
-      const files = await res.json();
-      if (files && files.length > 0) {
-        const indexFile = files.find((item) => item.path === 'index.html') || files[0];
-        setActiveFileId(indexFile.id);
-        window.activeFileId = indexFile.id;
+      const list = await res.json();
+      if (!Array.isArray(list)) return;
+
+      setFiles(list);
+      const entries = await Promise.all(
+        list.map(async (item) => {
+          try {
+            const r = await fetch(`${API_URL}/api/code/files/${item.id}`, { headers });
+            const row = r.ok ? await r.json() : null;
+            return [item.path, row?.content || ''];
+          } catch {
+            return [item.path, ''];
+          }
+        })
+      );
+      setContents(Object.fromEntries(entries));
+
+      if (list.length > 0) {
+        const current = list.find((item) => item.id === window.activeFileId);
+        const selected = current || list.find((item) => item.path === 'index.html') || list[0];
+        setActiveFileId(selected.id);
+        window.activeFileId = selected.id;
       }
     } catch (error) {
       console.error('Erreur fetchFiles', error);
     }
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    console.log('create blueprint', { ...form, fileName: file?.name || 'none' });
+  useEffect(() => {
+    if (!isGenerating) return undefined;
+    setElapsed(0);
+    setProgress(0);
+    const expectedMs = aiMultiPage ? 30000 : 15000;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const ms = Date.now() - startedAt;
+      setElapsed(Math.floor(ms / 1000));
+      if (!streamingRef.current) {
+        setProgress(Math.min(95, Math.round(95 * (1 - Math.exp(-ms / expectedMs)))));
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [isGenerating]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const cancelGeneration = () => abortRef.current?.abort();
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/code/ai/history`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json().catch(() => []);
+      if (res.ok && Array.isArray(data)) setHistory(data);
+    } catch (error) {
+      console.error('Erreur historique', error);
+    }
   };
 
-  async function generateWithAI() {
+  const toggleHistory = () => {
+    if (!historyOpen) fetchHistory();
+    setHistoryOpen((value) => !value);
+  };
+
+  const reuseGeneration = (item) => {
+    setAiPrompt(item.prompt || '');
+    if (item.type) setAiType(item.type);
+    setHistoryOpen(false);
+  };
+
+  const activeFile = files.find((item) => item.id === activeFileId);
+
+  const selectFile = (id) => {
+    setActiveFileId(id);
+    window.activeFileId = id;
+  };
+
+  const previewHtml = useMemo(() => {
+    if (!activeFile || !/\.html?$/i.test(activeFile.path)) return '';
+    const dir = activeFile.path.includes('/') ? activeFile.path.slice(0, activeFile.path.lastIndexOf('/') + 1) : '';
+    const resolve = (ref) => {
+      if (/^(https?:)?\/\//i.test(ref)) return null;
+      const clean = ref.replace(/^\.\//, '').replace(/^\//, '');
+      return contents[ref.startsWith('/') ? clean : dir + clean] ?? contents[clean] ?? null;
+    };
+    return (contents[activeFile.path] || '')
+      .replace(/<link[^>]+href=["']([^"']+\.css)["'][^>]*>/gi, (match, href) => {
+        const css = resolve(href);
+        return css === null ? match : `<style>${css}</style>`;
+      })
+      .replace(/<script[^>]+src=["']([^"']+\.js)["'][^>]*><\/script>/gi, (match, src) => {
+        const js = resolve(src);
+        return js === null ? match : `<script>${js.replace(/<\/script/gi, '<\\/script')}</script>`;
+      });
+  }, [activeFile, contents]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (isCreating) return;
+
     if (!token) {
-      showToast('Connectez-vous pour générer avec l’IA', 'error');
+      showToast('Connectez-vous pour créer un blueprint', 'error');
       return;
     }
 
-    if (!aiPrompt.trim()) {
-      showToast('Décrivez le projet à générer', 'error');
+    const name = form.name.trim();
+    if (!name) {
+      showToast('Le nom du blueprint est requis', 'error');
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+      showToast('Nom invalide : lettres, chiffres, point, tiret et underscore uniquement', 'error');
       return;
     }
 
+    setIsCreating(true);
     try {
-      showToast('Génération IA en cours…', 'info');
-      const res = await fetch(`${API_URL_EXPORT}/api/code/ai/generate`, {
+      const res = await fetch(`${API_URL}/api/blueprints/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
-          prompt: aiPrompt,
-          type: aiType,
-          language: aiLanguage,
-          theme: aiTheme,
-          multiPage: aiMultiPage
+          name,
+          description: form.description.trim(),
+          version: form.version.trim() || '1.0.0'
         })
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Erreur de génération');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Création du blueprint impossible');
+
+      showToast(`✅ Blueprint « ${data.name || name} » ${data.version || ''} créé`, 'success');
+      setForm({ name: '', description: '', version: '1.0.0' });
+      onBlueprintCreated?.();
+    } catch (error) {
+      showToast(`Erreur : ${describeError(error)}`, 'error');
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const attachmentsText = attachments
+    .map((item) => `\n\n--- Fichier joint : ${item.name} ---\n${item.content}`)
+    .join('');
+  const totalChars = aiPrompt.trim().length + attachmentsText.length;
+
+  async function attachFiles(event) {
+    const picked = Array.from(event.target.files || []);
+    event.target.value = '';
+
+    for (const file of picked) {
+      if (!TEXT_FILE_PATTERN.test(file.name)) {
+        showToast(`${file.name} : format non pris en charge (texte, HTML, CSS, JS, JSON, MD…)`, 'error');
+        continue;
+      }
+      const content = (await file.text()).trim();
+      const used = aiPrompt.trim().length + attachments.reduce((sum, item) => sum + item.content.length + item.name.length + 30, 0);
+      if (used + content.length + file.name.length + 30 > MAX_PROMPT_CHARS) {
+        showToast(`${file.name} : trop volumineux (limite totale ${MAX_PROMPT_CHARS} caractères)`, 'error');
+        continue;
+      }
+      setAttachments((prev) => [...prev.filter((item) => item.name !== file.name), { name: file.name, content }]);
+    }
+  }
+
+  async function generateWithAI() {
+    if (isGenerating || isSuggesting) return;
+
+    if (!token) {
+      showToast('Connectez-vous pour générer avec l’IA', 'error');
+      return;
+    }
+
+    const prompt = `${aiPrompt.trim()}${attachmentsText}`;
+    if (!aiPrompt.trim()) {
+      showToast('Décrivez le projet à générer', 'error');
+      return;
+    }
+    if (prompt.length > MAX_PROMPT_CHARS) {
+      showToast(`Brief trop long (${prompt.length}/${MAX_PROMPT_CHARS} caractères)${hasExtendedBrief ? '' : ' — passez au plan Scale-Up pour ' + EXTENDED_PROMPT_CHARS + ' caractères'}`, 'error');
+      return;
+    }
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let status;
+    setShowBuild(true);
+    setIsGenerating(true);
+    try {
+      showToast('Génération IA en cours…', 'info');
+      const body = JSON.stringify({
+        prompt,
+        type: aiType,
+        language: aiLanguage,
+        theme: aiTheme,
+        multiPage: aiMultiPage
+      });
+      const request = (path) => fetch(`${API_URL}/api/code/ai/${path}`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body
+      });
+
+      let res = await request('generate-stream');
+      let data;
+
+      if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) {
+        streamingRef.current = true;
+        let streamError = null;
+        await readSse(res, (event, payload) => {
+          if (event === 'progress') setProgress(Math.min(99, payload.percent));
+          if (event === 'done') data = payload;
+          if (event === 'error') streamError = payload;
+        });
+        if (streamError) {
+          status = streamError.status;
+          throw new Error(streamError.error || 'Erreur de génération');
+        }
+        if (!data) throw new Error('Flux interrompu avant la fin de la génération');
+      } else {
+        if (res.status === 404) res = await request('generate');
+        status = res.status;
+        data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Erreur de génération');
+        }
       }
 
+      setLastRefine(null);
       await fetchFiles();
-      showToast('✅ Site généré par l’IA', 'success');
+      setProgress(100);
+      setTimeout(() => setShowBuild(false), 1200);
+      if (historyOpen) fetchHistory();
+      if (data.truncated) {
+        showToast('⚠️ Réponse tronquée : essayez un brief plus court ou un site mono-page', 'info');
+      } else {
+        showToast(`✅ ${data.files?.length || 0} fichier(s) générés par l’IA`, 'success');
+      }
     } catch (error) {
       console.error('Erreur generation IA:', error);
-      showToast(`Erreur : ${error.message}`, 'error');
+      setShowBuild(false);
+      showToast(`Erreur : ${describeError(error, status)}`, error?.name === 'AbortError' ? 'info' : 'error');
+    } finally {
+      abortRef.current = null;
+      streamingRef.current = false;
+      setIsGenerating(false);
     }
   }
 
   async function requestSuggestions() {
-    if (!token || !aiPrompt.trim()) {
+    if (isGenerating || isSuggesting) return;
+
+    if (!token) {
+      showToast('Connectez-vous pour obtenir des suggestions', 'error');
+      return;
+    }
+
+    const prompt = aiPrompt.trim();
+    if (!prompt) {
       showToast('Renseignez le brief pour avoir des suggestions', 'error');
       return;
     }
 
+    setIsSuggesting(true);
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/code/ai/suggest`, {
+      const res = await fetch(`${API_URL}/api/code/ai/suggest`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ prompt: aiPrompt })
+        body: JSON.stringify({ prompt })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Erreur suggestions');
       setSuggestions(data.suggestions || []);
     } catch (error) {
       showToast(`Erreur suggestions : ${error.message}`, 'error');
+    } finally {
+      setIsSuggesting(false);
     }
   }
 
@@ -124,9 +417,15 @@ export default function BlueprintEditor() {
       showToast('Sélectionnez un fichier et donnez une instruction', 'error');
       return;
     }
+    if (isRefining) return;
 
+    const snapshot = activeFile
+      ? { path: activeFile.path, language: activeFile.language, content: contents[activeFile.path] ?? '' }
+      : null;
+
+    setIsRefining(true);
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/code/ai/refine`, {
+      const res = await fetch(`${API_URL}/api/code/ai/refine`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -138,17 +437,69 @@ export default function BlueprintEditor() {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Erreur raffinement');
       }
 
       setRefineInstruction('');
       window.activeFileId = activeFileId;
+      setLastRefine(snapshot);
+      await fetchFiles();
       showToast('✅ Code modifié par l’IA', 'success');
     } catch (error) {
-      showToast(`Erreur raffinement : ${error.message}`, 'error');
+      showToast(`Erreur raffinement : ${describeError(error)}`, 'error');
+    } finally {
+      setIsRefining(false);
     }
+  }
+
+  async function undoRefine() {
+    if (!lastRefine || isRefining) return;
+
+    setIsRefining(true);
+    try {
+      const res = await fetch(`${API_URL}/api/code/files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(lastRefine)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Annulation impossible');
+
+      setLastRefine(null);
+      await fetchFiles();
+      showToast('↩️ Modification annulée', 'success');
+    } catch (error) {
+      showToast(`Erreur : ${describeError(error)}`, 'error');
+    } finally {
+      setIsRefining(false);
+    }
+  }
+
+  async function copyActiveFile() {
+    try {
+      await navigator.clipboard.writeText(contents[activeFile?.path] || '');
+      showToast('📋 Code copié', 'success');
+    } catch {
+      showToast('Copie impossible depuis ce navigateur', 'error');
+    }
+  }
+
+  function downloadActiveFile() {
+    if (!activeFile) return;
+    const blob = new Blob([contents[activeFile.path] || ''], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = activeFile.path.split('/').pop();
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   async function exportZip() {
@@ -160,7 +511,7 @@ export default function BlueprintEditor() {
     try {
       showToast('Préparation du ZIP…', 'info');
 
-      const res = await fetch(`${API_URL_EXPORT}/api/export/zip`, {
+      const res = await fetch(`${API_URL}/api/export/zip`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -200,7 +551,7 @@ export default function BlueprintEditor() {
     setPreviewLoading(true);
 
     try {
-      const res = await fetch(`${API_URL_EXPORT}/api/export/preview`, {
+      const res = await fetch(`${API_URL}/api/export/preview`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -256,15 +607,39 @@ export default function BlueprintEditor() {
         </div>
       </div>
 
+      <div role="group" aria-label="Fonctions des blueprints" style={styles.editorTabs}>
+        <button
+          type="button"
+          aria-pressed={activeEditorTab === 'editor'}
+          onClick={() => setActiveEditorTab('editor')}
+          style={activeEditorTab === 'editor' ? styles.editorTabActive : styles.editorTab}
+        >
+          Éditeur
+        </button>
+        <button
+          type="button"
+          aria-pressed={activeEditorTab === 'import'}
+          onClick={() => setActiveEditorTab('import')}
+          style={activeEditorTab === 'import' ? styles.editorTabActive : styles.editorTab}
+        >
+          Import
+        </button>
+      </div>
+
+      <div style={{ display: activeEditorTab === 'editor' ? 'block' : 'none' }}>
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12, maxWidth: 500 }}>
         <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nom" style={styles.input} />
         <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description" style={styles.input} rows={4} />
-        <input value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="Version" style={styles.input} />
-        <label style={{ display: 'grid', gap: 8 }}>
-          <span>Helm chart (.tgz)</span>
-          <input type="file" accept=".tgz" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
-        </label>
-        <button type="submit" style={styles.button}>Créer le blueprint</button>
+        <input
+          value={form.version}
+          onChange={(e) => setForm({ ...form, version: e.target.value })}
+          placeholder="Version"
+          style={styles.input}
+        />
+        <small style={{ color: '#94a3b8' }}>Pour importer un Helm chart, utilisez l’onglet Import.</small>
+        <button type="submit" disabled={isCreating} style={styles.button}>
+          {isCreating ? 'Création…' : 'Créer le blueprint'}
+        </button>
       </form>
 
       <div style={styles.aiPanel}>
@@ -312,15 +687,98 @@ export default function BlueprintEditor() {
           </div>
         </div>
 
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <label style={styles.fileTab}>
+              📎 Joindre des fichiers
+              <input
+                type="file"
+                multiple
+                accept=".html,.htm,.css,.js,.jsx,.ts,.tsx,.json,.md,.txt,.yml,.yaml,.xml,.csv,.svg"
+                onChange={attachFiles}
+                style={{ display: 'none' }}
+              />
+            </label>
+            <small style={{ color: totalChars > MAX_PROMPT_CHARS ? '#f87171' : '#94a3b8' }}>
+              {totalChars}/{MAX_PROMPT_CHARS} caractères
+            </small>
+            {!hasExtendedBrief && (
+              <small style={{ color: '#a78bfa' }}>
+                Fichiers jusqu’à {EXTENDED_PROMPT_CHARS} caractères avec les plans Scale-Up et Enterprise
+              </small>
+            )}
+          </div>
+          {attachments.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {attachments.map((item) => (
+                <span key={item.name} style={{ ...styles.fileTab, display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  📄 {item.name} ({item.content.length})
+                  <button
+                    type="button"
+                    aria-label={`Retirer ${item.name}`}
+                    onClick={() => setAttachments((prev) => prev.filter((entry) => entry.name !== item.name))}
+                    style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer' }}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#cbd5e1' }}>
           <input type="checkbox" checked={aiMultiPage} onChange={(e) => setAiMultiPage(e.target.checked)} />
           Générer un site multi-pages
         </label>
 
         <div style={styles.aiActions}>
-          <button type="button" onClick={generateWithAI} style={styles.aiButtonPrimary}>Générer</button>
-          <button type="button" onClick={requestSuggestions} style={styles.aiButtonSecondary}>Suggestions</button>
+          <button
+            type="button"
+            onClick={generateWithAI}
+            disabled={isGenerating || isSuggesting}
+            style={styles.aiButtonPrimary}
+          >
+            {isGenerating ? `Génération en cours… ${elapsed}s` : 'Générer'}
+          </button>
+          {isGenerating && (
+            <button type="button" onClick={cancelGeneration} style={styles.aiButtonSecondary}>Annuler</button>
+          )}
+          <button
+            type="button"
+            onClick={requestSuggestions}
+            disabled={isGenerating || isSuggesting}
+            style={styles.aiButtonSecondary}
+          >
+            {isSuggesting ? 'Recherche…' : 'Suggestions'}
+          </button>
+          <button type="button" onClick={toggleHistory} style={styles.aiButtonSecondary}>
+            {historyOpen ? 'Masquer l’historique' : 'Historique'}
+          </button>
         </div>
+
+        {historyOpen && (
+          <div style={styles.suggestionsBox}>
+            {history.length === 0 ? (
+              <span style={{ color: '#94a3b8', fontSize: 13 }}>Aucune génération pour le moment.</span>
+            ) : (
+              history.map((item) => (
+                <button
+                  key={item.id ?? `${item.created_at}-${item.prompt}`}
+                  type="button"
+                  style={styles.suggestionButton}
+                  onClick={() => reuseGeneration(item)}
+                >
+                  <strong>{item.type || 'site'} · {item.files_count ?? 0} fichier(s)</strong>
+                  <span>
+                    {(item.prompt || '').slice(0, 120)}
+                    {item.created_at ? ` — ${new Date(item.created_at).toLocaleString('fr-FR')}` : ''}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
 
         {suggestions.length > 0 && (
           <div style={styles.suggestionsBox}>
@@ -339,6 +797,75 @@ export default function BlueprintEditor() {
         )}
       </div>
 
+      {showBuild && (
+        <div style={styles.buildPanel}>
+          <div style={styles.buildHead}>
+            <strong>{progress >= 100 ? 'Site prêt ✅' : BUILD_STAGES.filter((stage) => progress >= stage.from).pop().label}</strong>
+            <span>{isGenerating ? progress : 100}%</span>
+          </div>
+          <div style={styles.progressTrack}>
+            <div style={{ ...styles.progressBar, width: `${isGenerating ? progress : 100}%` }} />
+          </div>
+          <div style={styles.skeleton}>
+            {SKELETON_BLOCKS.map((block) => (
+              <div
+                key={block.label}
+                style={{
+                  ...styles.skeletonBlock,
+                  height: block.height,
+                  opacity: progress >= block.from ? 1 : 0.15
+                }}
+              >
+                {block.label}
+              </div>
+            ))}
+          </div>
+          <small style={{ color: '#94a3b8' }}>Progression en direct — l’aperçu complet s’affiche à la fin.</small>
+        </div>
+      )}
+
+      {files.length > 0 && !(showBuild && isGenerating) && (
+        <div style={fullscreen ? { ...styles.previewPanel, ...styles.previewFullscreen } : styles.previewPanel}>
+          <div style={styles.previewToolbar}>
+            <button type="button" onClick={copyActiveFile} style={styles.fileTab}>📋 Copier</button>
+            <button type="button" onClick={downloadActiveFile} style={styles.fileTab}>⬇️ Télécharger</button>
+            <button type="button" onClick={() => setFullscreen((value) => !value)} style={styles.fileTab}>
+              {fullscreen ? '✕ Quitter le plein écran' : '⛶ Plein écran'}
+            </button>
+          </div>
+          <div style={styles.fileList}>
+            {files.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => selectFile(item.id)}
+                style={item.id === activeFileId ? { ...styles.fileTab, ...styles.fileTabActive } : styles.fileTab}
+              >
+                {getFileIcon(item.path)} {item.path}
+              </button>
+            ))}
+          </div>
+          {previewHtml ? (
+            <iframe
+              title="Aperçu du site généré"
+              sandbox="allow-scripts"
+              srcDoc={previewHtml}
+              style={fullscreen ? { ...styles.previewFrame, height: 'calc(100vh - 120px)' } : styles.previewFrame}
+            />
+          ) : (
+            <pre style={fullscreen ? { ...styles.codeView, maxHeight: 'calc(100vh - 120px)' } : styles.codeView}>{contents[activeFile?.path] || ''}</pre>
+          )}
+        </div>
+      )}
+
+      <div style={styles.refineChips}>
+        {REFINE_SUGGESTIONS.map((suggestion) => (
+          <button key={suggestion} type="button" onClick={() => setRefineInstruction(suggestion)} style={styles.fileTab}>
+            {suggestion}
+          </button>
+        ))}
+      </div>
+
       <div style={styles.refineBar}>
         <input
           type="text"
@@ -350,7 +877,12 @@ export default function BlueprintEditor() {
             if (event.key === 'Enter') refineWithAI();
           }}
         />
-        <button type="button" onClick={refineWithAI} style={styles.refineButton}>Raffiner</button>
+        <button type="button" onClick={refineWithAI} disabled={isRefining} style={styles.refineButton}>
+          {isRefining ? 'Modification…' : 'Raffiner'}
+        </button>
+        {lastRefine && (
+          <button type="button" onClick={undoRefine} disabled={isRefining} style={styles.fileTab}>↩️ Annuler</button>
+        )}
       </div>
 
       {previewOpen && (
@@ -393,6 +925,9 @@ export default function BlueprintEditor() {
           </div>
         </div>
       )}
+      </div>
+
+      {activeEditorTab === 'import' && <BlueprintImport onBlueprintCreated={onBlueprintCreated} />}
     </div>
   );
 }
@@ -425,6 +960,25 @@ const styles = {
     position: 'relative'
   },
   title: { margin: 0, fontSize: 18 },
+  editorTabs: { display: 'flex', gap: 8, marginBottom: 18, borderBottom: '1px solid #334155' },
+  editorTab: {
+    padding: '9px 14px',
+    border: '1px solid transparent',
+    borderBottom: '2px solid transparent',
+    background: 'transparent',
+    color: '#94a3b8',
+    cursor: 'pointer',
+    fontWeight: 600
+  },
+  editorTabActive: {
+    padding: '9px 14px',
+    border: '1px solid transparent',
+    borderBottom: '2px solid #38bdf8',
+    background: 'rgba(56,189,248,0.08)',
+    color: '#7ae7ff',
+    cursor: 'pointer',
+    fontWeight: 700
+  },
   exportWrap: { position: 'relative' },
   exportButton: {
     display: 'inline-flex',
@@ -466,9 +1020,8 @@ const styles = {
   },
   exportIcon: { fontSize: 20, flexShrink: 0 },
   menuTitle: { display: 'block', fontSize: 13, fontWeight: 700, marginBottom: 2 },
-  menuMeta: { display: 'block', fontSize: 11, color: '#94a3b8' },
+  menuMeta: { display: 'block', fontSize: 11, color: '#94a3b8'   },
   input: { padding: '10px 12px', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#fff' },
-  fileInput: { color: '#fff' },
   button: { background: '#8b5cf6', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 12px', cursor: 'pointer' },
   aiPanel: {
     marginTop: 18,
@@ -490,6 +1043,21 @@ const styles = {
   aiButtonSecondary: { background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 8, padding: '10px 16px', cursor: 'pointer' },
   suggestionsBox: { display: 'grid', gap: 8 },
   suggestionButton: { display: 'grid', gap: 4, textAlign: 'left', background: '#111827', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 10, padding: 10, cursor: 'pointer' },
+  buildPanel: { marginTop: 20, padding: 14, border: '1px solid #334155', borderRadius: 12, background: '#0f172a', display: 'grid', gap: 10, color: '#e2e8f0' },
+  buildHead: { display: 'flex', justifyContent: 'space-between', fontSize: 14 },
+  progressTrack: { height: 10, borderRadius: 999, background: '#1e293b', overflow: 'hidden' },
+  progressBar: { height: '100%', background: 'linear-gradient(90deg, #14b8a6, #38bdf8)', transition: 'width 0.3s ease' },
+  skeleton: { display: 'grid', gap: 8, padding: 12, borderRadius: 8, background: '#fff1', border: '1px dashed #334155' },
+  skeletonBlock: { display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: 'rgba(20, 184, 166, 0.15)', color: '#99f6e4', fontSize: 12, transition: 'opacity 0.5s ease' },
+  previewPanel: { marginTop: 20, border: '1px solid #334155', borderRadius: 12, overflow: 'hidden', background: '#0f172a' },
+  fileList: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10, borderBottom: '1px solid #334155' },
+  fileTab: { background: 'transparent', color: '#cbd5e1', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 },
+  fileTabActive: { background: 'rgba(20, 184, 166, 0.2)', borderColor: '#14b8a6', color: '#fff' },
+  previewToolbar: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 10, borderBottom: '1px solid #334155', justifyContent: 'flex-end' },
+  previewFullscreen: { position: 'fixed', inset: 0, zIndex: 1100, marginTop: 0, borderRadius: 0, overflow: 'auto' },
+  refineChips: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 20 },
+  previewFrame: { width: '100%', height: 420, border: 'none', background: '#fff', display: 'block' },
+  codeView: { margin: 0, padding: 14, maxHeight: 420, overflow: 'auto', color: '#e2e8f0', fontSize: 12 },
   refineBar: { display: 'flex', gap: 8, padding: '10px 14px', background: '#0f172a', borderTop: '1px solid #334155', marginTop: 20 },
   refineInput: { flex: 1, height: 36, padding: '0 12px', border: '1px solid #334155', borderRadius: 8, background: '#020817', color: '#e2e8f0', fontSize: 13 },
   refineButton: { padding: '0 16px', height: 36, background: 'linear-gradient(135deg, #6366f1, #a855f7)', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, cursor: 'pointer' },

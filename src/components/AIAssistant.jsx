@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -31,49 +31,234 @@ const fallbackReply = (message) => {
   return 'Je peux vous aider à concevoir un blueprint, sécuriser un tenant, choisir des métriques, ou préparer un plan de déploiement production. Décrivez votre besoin en une phrase.';
 };
 
-export default function AIAssistant() {
-  const { token } = useAuth();
+const MAX_STORED_MESSAGES = 50;
+const WELCOME = {
+  role: 'assistant',
+  text: 'Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.'
+};
+
+function renderInline(text) {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return <code key={index} style={codeInlineStyle}>{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+}
+
+function MessageContent({ text }) {
+  const blocks = [];
+  const lines = text.split('\n');
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.trim().startsWith('```')) {
+      const code = [];
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      blocks.push(<pre key={blocks.length} style={codeBlockStyle}>{code.join('\n')}</pre>);
+      continue;
+    }
+
+    const listMatch = /^\s*(?:[-*]|\d+[.)])\s+/.exec(line);
+    if (listMatch) {
+      const ordered = /^\s*\d/.test(line);
+      const items = [];
+      while (i < lines.length && /^\s*(?:[-*]|\d+[.)])\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*(?:[-*]|\d+[.)])\s+/, ''));
+        i += 1;
+      }
+      const ListTag = ordered ? 'ol' : 'ul';
+      blocks.push(
+        <ListTag key={blocks.length} style={{ margin: '4px 0', paddingLeft: 20, lineHeight: 1.6 }}>
+          {items.map((item, index) => <li key={index}>{renderInline(item)}</li>)}
+        </ListTag>
+      );
+      continue;
+    }
+
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+
+    const heading = /^#{1,3}\s+(.*)$/.exec(line);
+    blocks.push(
+      <p key={blocks.length} style={{ margin: '4px 0', lineHeight: 1.6, fontWeight: heading ? 700 : 400 }}>
+        {renderInline(heading ? heading[1] : line)}
+      </p>
+    );
+    i += 1;
+  }
+
+  return <>{blocks}</>;
+}
+
+const codeInlineStyle = { background: '#0f172a', padding: '1px 5px', borderRadius: 4, fontSize: '0.9em' };
+const codeBlockStyle = { background: '#0b1220', padding: 10, borderRadius: 8, overflowX: 'auto', fontSize: 12, margin: '6px 0' };
+const smallButtonStyle = {
+  background: 'transparent',
+  color: '#94a3b8',
+  border: '1px solid #334155',
+  borderRadius: 6,
+  padding: '2px 8px',
+  cursor: 'pointer',
+  fontSize: 11
+};
+
+async function readSse(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop();
+    for (const block of blocks) {
+      const event = /^event: (.+)$/m.exec(block)?.[1];
+      const data = /^data: (.+)$/m.exec(block)?.[1];
+      if (event && data) {
+        try {
+          onEvent(event, JSON.parse(data));
+        } catch {
+          // bloc SSE illisible, ignoré
+        }
+      }
+    }
+  }
+}
+
+function loadHistory(storageKey) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+    if (Array.isArray(saved) && saved.length > 0) return saved;
+  } catch {
+    // stockage corrompu, on repart d'une conversation vide
+  }
+  return [WELCOME];
+}
+
+export default function AIAssistant({ context = {} }) {
+  const { token, user } = useAuth();
+  const storageKey = `polyscale-ai-chat-${user?.id ?? user?.email ?? 'anon'}`;
   const [message, setMessage] = useState('');
-  const [reply, setReply] = useState('Je peux vous aider à générer un blueprint, sécuriser la plateforme ou préparer un plan de production.');
+  const [history, setHistory] = useState(() => loadHistory(storageKey));
+  const [copiedIndex, setCopiedIndex] = useState(null);
   const [loading, setLoading] = useState(false);
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(history.slice(-MAX_STORED_MESSAGES)));
+    } catch {
+      // quota dépassé : la conversation reste en mémoire
+    }
+  }, [history, storageKey]);
+
+  const resetConversation = () => setHistory([WELCOME]);
+
+  const copyMessage = async (text, index) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 1500);
+    } catch {
+      setCopiedIndex(null);
+    }
+  };
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+  }, [history]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const trimmed = message.trim();
     if (!trimmed || loading) return;
 
+    const previousMessages = history
+      .filter((entry) => entry.text !== WELCOME.text)
+      .slice(-10)
+      .map((entry) => ({ role: entry.role, content: entry.text.slice(0, 1500) }));
+
     setLoading(true);
-    setReply('Je traite votre demande...');
+    setMessage('');
+    setHistory((prev) => [...prev, { role: 'user', text: trimmed }]);
+    const addReply = (text) => setHistory((prev) => [...prev, { role: 'assistant', text }]);
 
+    const payload = JSON.stringify({
+      message: trimmed,
+      history: previousMessages,
+      context: { platform: 'PolyScale', ...context }
+    });
+    const request = (path) => fetch(`${API_URL}/api/ai/${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: payload
+    });
+
+    let streamStarted = false;
     try {
-      const response = await fetch(`${API_URL}/api/ai/ask`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          message: trimmed,
-          context: {
-            platform: 'PolyScale',
-            environment: 'production-readiness',
-            tenant: 'demo',
-            modules: ['dashboard', 'deployments', 'blueprints', 'metrics', 'security']
-          }
-        })
-      });
+      let response = await request('ask-stream');
 
+      if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
+        let streamError = null;
+        let finished = false;
+        await readSse(response, (event, data) => {
+          if (event === 'token') {
+            if (!streamStarted) {
+              streamStarted = true;
+              setHistory((prev) => [...prev, { role: 'assistant', text: data.text }]);
+            } else {
+              setHistory((prev) => {
+                const next = prev.slice();
+                const last = next[next.length - 1];
+                next[next.length - 1] = { ...last, text: last.text + data.text };
+                return next;
+              });
+            }
+          }
+          if (event === 'done') finished = true;
+          if (event === 'error') streamError = data;
+        });
+        if (streamError) throw new Error(streamError.error || 'Le service IA est momentanément indisponible.');
+        if (!finished && !streamStarted) throw new Error('Flux interrompu avant la réponse.');
+        return;
+      }
+
+      if (response.status === 404) response = await request('ask');
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
         throw new Error(data.error || 'Le service IA est momentanément indisponible.');
       }
 
-      setReply(data.reply || fallbackReply(trimmed));
-      setMessage('');
+      addReply(data.reply || fallbackReply(trimmed));
     } catch (error) {
-      setReply(`${fallbackReply(trimmed)}\n\nNote: ${error.message}`);
-      setMessage('');
+      if (streamStarted) {
+        setHistory((prev) => {
+          const next = prev.slice();
+          const last = next[next.length - 1];
+          next[next.length - 1] = { ...last, text: `${last.text}\n\n⚠️ Réponse interrompue : ${error.message}` };
+          return next;
+        });
+      } else {
+        addReply(`${fallbackReply(trimmed)}\n\nNote: ${error.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -81,7 +266,12 @@ export default function AIAssistant() {
 
   return (
     <div style={{ position: 'relative', maxWidth: 650 }}>
-      <h3 style={{ marginBottom: 12 }}>Assistant IA</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>Assistant IA</h3>
+        <button type="button" onClick={resetConversation} disabled={loading} style={smallButtonStyle}>
+          Nouvelle conversation
+        </button>
+      </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
         {quickPrompts.map((prompt) => (
@@ -104,8 +294,31 @@ export default function AIAssistant() {
         ))}
       </div>
 
-      <div style={{ background: '#111827', borderRadius: 12, padding: 16, border: '1px solid #334155', minHeight: 140 }}>
-        <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6, color: '#e2e8f0' }}>{reply}</p>
+      <div style={{ background: '#111827', borderRadius: 12, padding: 16, border: '1px solid #334155', minHeight: 140, maxHeight: 360, overflowY: 'auto', display: 'grid', gap: 10 }}>
+        {history.map((entry, index) => (
+          <div
+            key={index}
+            style={{
+              justifySelf: entry.role === 'user' ? 'end' : 'start',
+              maxWidth: '85%',
+              padding: '8px 12px',
+              borderRadius: 10,
+              background: entry.role === 'user' ? 'rgba(20, 184, 166, 0.25)' : '#1e293b',
+              color: '#e2e8f0'
+            }}
+          >
+            {entry.role === 'assistant' ? <MessageContent text={entry.text} /> : (
+              <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6 }}>{entry.text}</p>
+            )}
+            {entry.role === 'assistant' && index > 0 && (
+              <button type="button" onClick={() => copyMessage(entry.text, index)} style={{ ...smallButtonStyle, marginTop: 6 }}>
+                {copiedIndex === index ? 'Copié ✓' : 'Copier'}
+              </button>
+            )}
+          </div>
+        ))}
+        {loading && history[history.length - 1]?.role === 'user' && <div style={{ color: '#94a3b8', fontSize: 13 }}>L’assistant réfléchit…</div>}
+        <div ref={endRef} />
       </div>
 
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
@@ -113,6 +326,12 @@ export default function AIAssistant() {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={4}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit(e);
+            }
+          }}
           placeholder="Posez une question à l’assistant IA..."
           style={{
             padding: 12,
