@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 import { useToast } from './context/ToastContext.jsx';
 import { ToastView } from './components/Toast.jsx';
@@ -13,6 +13,9 @@ import MetricsChart from './components/MetricsChart.jsx';
 import FilterBar, { NoResults, useListFilter } from './components/FilterBar.jsx';
 import AIAssistant from './components/AIAssistant.jsx';
 import Help from './components/Help.jsx';
+import BlueprintCatalog from './components/BlueprintCatalog.jsx';
+import { blueprints as publicBlueprints } from './data/blueprints.js';
+import { plans as subscriptionPlans } from './data/plans.js';
 
 const navItems = [
   { key: 'overview', label: 'Overview', active: true },
@@ -66,6 +69,15 @@ function BlueprintsTab() {
     <>
       {isPlanCatalog && (
         <>
+          {blueprintPlan === 'starter' && (
+            <div style={{ ...styles.planNotice, marginBottom: 18 }}>
+              <div>
+                <strong>🥉 Votre plan Starter vous donne accès à {blueprintAccessCount} blueprints.</strong>
+                <div style={{ color: '#cbd5e1', marginTop: 5 }}>Débloquez 20 blueprints Scale-up et augmentez vos limites.</div>
+              </div>
+              <button type="button" style={styles.primaryButton} onClick={() => handleCheckout('scale-up')}>Passer à Scale-up →</button>
+            </div>
+          )}
           <p style={{ color: '#cbd5e1', margin: '0 0 16px' }}>
             {blueprintList.length} blueprints visibles · {blueprintAccessCount} disponibles avec le plan {blueprintPlan}.
           </p>
@@ -85,6 +97,14 @@ function BlueprintsTab() {
               >
                 {label}
               </button>
+            ))}
+          </div>
+          <div style={styles.catalogSampleGrid}>
+            {publicBlueprints.slice(15, 18).map((blueprint) => (
+              <div key={blueprint.id} style={styles.catalogSampleCard}>
+                <span>{blueprint.icon} {blueprint.name}</span>
+                <small>{blueprint.description}</small>
+              </div>
             ))}
           </div>
         </>
@@ -245,14 +265,6 @@ function recordMetricSample(setHistory, appId, data) {
   }));
 }
 
-const planFeatures = [
-  '1 cluster',
-  '3 blueprints',
-  '5 apps',
-  'AI assistant',
-  'Standard support'
-];
-
 const defaultTemplates = [
   { id: 'saas-landing', name: 'SaaS Landing', description: 'Landing page moderne pour un SaaS B2B', category: 'landing' },
   { id: 'dashboard-admin', name: 'Dashboard Admin', description: 'Interface d’administration avec sidebar et KPI', category: 'dashboard' },
@@ -261,41 +273,44 @@ const defaultTemplates = [
 ];
 
 function PublicLayout() {
-  const [view, setView] = useState('pricing');
-
   return (
     <div style={styles.pageShell}>
       <div style={styles.heroGlow} />
+      <style>{'@media(max-width:760px){.public-hero{grid-template-columns:1fr!important}.public-features,.public-pricing{grid-template-columns:1fr!important}.public-nav{justify-content:center}.public-hero-title{font-size:clamp(2.3rem,12vw,3.5rem)!important}}'}</style>
       <header style={styles.topbarPublic}>
-        <div style={styles.brandWrap}>
+        <Link to="/" style={{ ...styles.brandWrap, textDecoration: 'none' }}>
           <div style={styles.brandDot} />
           <div style={styles.brandTextGroup}>
             <span style={styles.brandText}>PolyScale</span>
             <span style={styles.partnerText}>by Elycoop</span>
           </div>
-        </div>
-        <div style={styles.topbarActions}>
-          <button style={styles.ghostButton} onClick={() => setView('pricing')}>Pricing</button>
-          <button style={styles.ghostButton} onClick={() => setView('promo')}>Promos</button>
-          <button style={styles.primaryButton} onClick={() => setView('login')}>Login</button>
+        </Link>
+        <div className="public-nav" style={styles.topbarActions}>
+          <Link to="/blueprints" style={styles.publicNavLink}>Catalogue</Link>
+          <a href="#tarifs" style={styles.publicNavLink}>Tarifs</a>
+          <Link to="/login" style={styles.publicNavLink}>Connexion</Link>
+          <Link to="/signup" style={{ ...styles.primaryButton, textDecoration: 'none' }}>Essayer gratuitement</Link>
         </div>
       </header>
 
       <main style={styles.publicMain}>
-        <section style={styles.heroSection}>
+        <section className="public-hero" style={styles.heroSection}>
           <div style={styles.heroTextWrap}>
-            <span style={styles.eyebrow}>Control plane for modern SaaS deployment</span>
-            <h1 style={styles.heroTitle}>Deploy smarter. Manage clusters with confidence.</h1>
+            <span style={styles.eyebrow}>Déploiement SaaS sans DevOps</span>
+            <h1 className="public-hero-title" style={styles.heroTitle}>Déployez votre SaaS en 2 minutes</h1>
             <p style={styles.heroText}>
-              PolyScale helps teams design, deploy, observe and secure SaaS workloads from a single cloud-native control plane.
+              PolyScale déploie, scale et sécurise vos applications grâce à des blueprints prêts à l’emploi, sans complexité opérationnelle.
             </p>
             <div style={styles.heroActions}>
-              <button style={styles.primaryButton} onClick={() => setView('signup')}>Start free</button>
-              <button style={styles.secondaryButton} onClick={() => setView('pricing')}>See pricing</button>
+              <Link to="/signup" style={{ ...styles.primaryButton, textDecoration: 'none' }}>Commencer gratuitement</Link>
+              <Link to="/blueprints" style={{ ...styles.secondaryButton, textDecoration: 'none' }}>Voir le catalogue</Link>
+            </div>
+            <div style={styles.heroBenefits}>
+              <span>✨ 50 blueprints</span><span>🤖 IA intégrée</span><span>🔐 Conçu pour le RGPD</span>
             </div>
             <div style={styles.trustRow}>
-              <div><strong>99.97%</strong><span>uptime</span></div>
-              <div><strong>12k</strong><span>deployments</span></div>
+              <div><strong>99.97%</strong><span>de disponibilité</span></div>
+              <div><strong>12k</strong><span>déploiements</span></div>
               <div><strong>24/7</strong><span>monitoring</span></div>
             </div>
           </div>
@@ -308,16 +323,16 @@ function PublicLayout() {
             </div>
             <div style={styles.visualGrid}>
               <div style={styles.panelCard}>
-                <span style={styles.panelLabel}>Cluster health</span>
-                <strong style={styles.panelValue}>Excellent</strong>
+                <span style={styles.panelLabel}>Santé du cluster</span>
+                <strong style={styles.panelValue}>Excellente</strong>
                 <div style={styles.progressTrack}><div style={{ ...styles.progressFill, width: '89%' }} /></div>
               </div>
               <div style={styles.panelCard}> 
-                <span style={styles.panelLabel}>AI Assistant</span>
-                <strong style={styles.panelValue}>Ready</strong>
+                <span style={styles.panelLabel}>Assistant IA</span>
+                <strong style={styles.panelValue}>Prêt</strong>
               </div>
               <div style={styles.panelCardWide}>
-                <div style={styles.rowBetween}><span>Deployments</span><span style={{ color: '#7ae7ff' }}>+18.2%</span></div>
+                <div style={styles.rowBetween}><span>Déploiements</span><span style={{ color: '#7ae7ff' }}>+18.2%</span></div>
                 <div style={styles.barGroup}>
                   <span style={{ ...styles.bar, height: '58%' }} />
                   <span style={{ ...styles.bar, height: '72%' }} />
@@ -330,53 +345,80 @@ function PublicLayout() {
           </div>
         </section>
 
-        <section style={styles.featureGrid}>
-          <div style={styles.featureCard}><span>Blueprints</span><strong>Reusable app templates</strong></div>
-          <div style={styles.featureCard}><span>Clusters</span><strong>Secure multi-tenant access</strong></div>
-          <div style={styles.featureCard}><span>Monitoring</span><strong>Live observability</strong></div>
-          <div style={styles.featureCard}><span>Automation</span><strong>GitOps and deployment flows</strong></div>
+        <section style={styles.socialProof}>
+          <strong>La plateforme conçue pour les équipes qui construisent</strong>
+          <div style={styles.socialAudience}><span>Startups</span><span>PME & scale-ups</span><span>Équipes produit</span><span>Grands comptes</span></div>
         </section>
 
-        <section style={styles.pricingSection}>
+        <section className="public-features" style={styles.featureGrid}>
+          <div style={styles.featureCard}><span>📚 Catalogue</span><strong>50 blueprints prêts à personnaliser</strong></div>
+          <div style={styles.featureCard}><span>🤖 IA</span><strong>Générez et adaptez votre code</strong></div>
+          <div style={styles.featureCard}><span>☸️ Kubernetes</span><strong>Déployez et gérez vos clusters</strong></div>
+          <div style={styles.featureCard}><span>🔐 Sécurité</span><strong>Contrôle des accès et isolation</strong></div>
+        </section>
+
+        <section style={styles.catalogTeaser}>
           <div style={styles.sectionHeader}>
-            <span style={styles.eyebrow}>Pricing</span>
-            <h2 style={styles.sectionTitle}>Simple plans for every stage</h2>
+            <span style={styles.eyebrow}>Explorez avant de vous inscrire</span>
+            <h2 style={styles.sectionTitle}>Découvrez le catalogue</h2>
+            <p style={styles.heroText}>Les 50 blueprints sont consultables gratuitement. Choisissez le plan qui correspond à votre stade.</p>
           </div>
-          <div style={styles.pricingCards}>
-            <div style={styles.priceCard}>
-              <span style={styles.planBadge}>Starter</span>
-              <h3 style={styles.planTitle}>49€<small style={styles.planSmall}>/mo</small></h3>
-              <ul style={styles.planList}>{planFeatures.map((f) => <li key={f}>{f}</li>)}</ul>
-              <button style={styles.primaryButton} onClick={() => setView('signup')}>Get started</button>
-            </div>
-            <div style={{ ...styles.priceCard, ...styles.priceCardFeatured }}>
-              <span style={{ ...styles.planBadge, ...styles.planBadgeFeatured }}>Scale-Up</span>
-              <h3 style={styles.planTitle}>99€<small style={styles.planSmall}>/mo</small></h3>
-              <ul style={styles.planList}>{['3 clusters', 'Unlimited blueprints', 'Advanced monitoring', 'Priority support', 'RBAC ready'].map((f) => <li key={f}>{f}</li>)}</ul>
-              <button style={styles.primaryButton} onClick={() => setView('signup')}>Choose plan</button>
-            </div>
-            <div style={styles.priceCard}>
-              <span style={styles.planBadge}>Enterprise</span>
-              <h3 style={styles.planTitle}>199€<small style={styles.planSmall}>/mo</small></h3>
-              <ul style={styles.planList}>{['Unlimited clusters', 'Advanced security', 'Private support', 'Custom onboarding', 'Dedicated tenant isolation'].map((f) => <li key={f}>{f}</li>)}</ul>
-              <button style={styles.primaryButton} onClick={() => setView('signup')}>Talk to sales</button>
-            </div>
+          <div style={styles.catalogTeaserGrid}>
+            {subscriptionPlans.map((plan) => (
+              <div key={plan.catalogKey} style={styles.teaserCard}>
+                <strong>{plan.emoji} {plan.name}</strong>
+                <span>{plan.blueprintCount} blueprints {plan.name} · {plan.blueprintAccessCount} accessibles</span>
+                <b>{plan.price} €/mois</b>
+              </div>
+            ))}
+          </div>
+          <div style={{ textAlign: 'center', marginTop: 22 }}>
+            <Link to="/blueprints" style={{ ...styles.secondaryButton, textDecoration: 'none' }}>Voir les 50 blueprints →</Link>
           </div>
         </section>
 
-        <section style={styles.switcherWrap}>
-          <div style={styles.tabsRow}>
-            <button style={styles.tabButton(view === 'login')} onClick={() => setView('login')}>Login</button>
-            <button style={styles.tabButton(view === 'signup')} onClick={() => setView('signup')}>Signup</button>
-            <button style={styles.tabButton(view === 'pricing')} onClick={() => setView('pricing')}>Tarifs</button>
-            <button style={styles.tabButton(view === 'promo')} onClick={() => setView('promo')}>Promo</button>
+        <section id="tarifs" style={styles.pricingSection}>
+          <div style={styles.sectionHeader}>
+            <span style={styles.eyebrow}>Tarifs transparents</span>
+            <h2 style={styles.sectionTitle}>Choisissez votre plan</h2>
           </div>
-          {view === 'login' && <Login />}
-          {view === 'signup' && <Signup />}
-          {view === 'pricing' && <Pricing />}
-          {view === 'promo' && <PromoPage />}
+          <div className="public-pricing" style={styles.pricingCards}>
+            {subscriptionPlans.map((plan) => (
+              <div key={plan.key} style={{ ...styles.priceCard, ...(plan.key === 'scale-up' ? styles.priceCardFeatured : {}) }}>
+                {plan.key === 'scale-up' && <span style={styles.recommendedBadge}>RECOMMANDÉ</span>}
+                <span style={{ ...styles.planBadge, ...(plan.key === 'scale-up' ? styles.planBadgeFeatured : {}) }}>{plan.emoji} {plan.name}</span>
+                <div>
+                  <del style={{ color: '#94a3b8', marginRight: 8 }}>{plan.regularPrice} €</del>
+                  <h3 style={styles.planTitle}>{plan.price} €<small style={styles.planSmall}>/mois</small></h3>
+                  <span style={{ color: '#4ade80', fontSize: 13 }}>-{plan.discount}% · offre de lancement</span>
+                </div>
+                <p style={{ ...styles.muted, margin: 0 }}>{plan.audience}</p>
+                <ul style={styles.planList}>{plan.limits.map((feature) => <li key={feature}>✓ {feature}</li>)}</ul>
+                <Link to={`/signup?plan=${plan.key}`} style={{ ...styles.primaryButton, textDecoration: 'none', textAlign: 'center', marginTop: 'auto' }}>Choisir {plan.name}</Link>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section style={styles.faqSection}>
+          <div style={styles.sectionHeader}>
+            <span style={styles.eyebrow}>Questions fréquentes</span>
+            <h2 style={styles.sectionTitle}>Démarrez sans friction</h2>
+          </div>
+          <div style={styles.faqGrid}>
+            <div><strong>Faut-il une carte bancaire pour essayer ?</strong><p style={styles.muted}>Créez un compte et explorez le plan Starter avant de choisir une offre payante.</p></div>
+            <div><strong>Puis-je voir les blueprints avant de créer un compte ?</strong><p style={styles.muted}>Oui, les 50 fiches et leurs aperçus sont accessibles depuis le catalogue public.</p></div>
+            <div><strong>Comment débloquer les autres plans ?</strong><p style={styles.muted}>Choisissez une offre depuis Tarifs ou votre espace. Le paiement est pris en charge par Stripe.</p></div>
+          </div>
+          <div style={styles.finalCta}>
+            <h2 style={styles.sectionTitle}>Prêt à démarrer ?</h2>
+            <p style={styles.muted}>Créez votre compte gratuit et découvrez PolyScale.</p>
+            <Link to="/signup" style={{ ...styles.primaryButton, textDecoration: 'none' }}>Commencer gratuitement →</Link>
+            <small style={{ color: '#94a3b8' }}>Plan Starter · Sans carte bancaire</small>
+          </div>
         </section>
       </main>
+      <footer style={styles.publicFooter}>© 2026 PolyScale · <Link to="/faq" style={styles.publicNavLink}>FAQ</Link> · <Link to="/promo" style={styles.publicNavLink}>Offres</Link></footer>
     </div>
   );
 }
@@ -1365,26 +1407,25 @@ function DashboardLayout() {
     }
 
     if (activeView === 'billing') {
-      const plans = [
-        { key: 'startup', name: 'Starter', price: '49€', features: ['1 cluster', '3 blueprints', 'AI assistant', 'Support standard'] },
-        { key: 'scale-up', name: 'Scale-Up', price: '99€', features: ['3 clusters', 'Unlimited blueprints', 'RBAC', 'Priority support'] },
-        { key: 'enterprise', name: 'Enterprise', price: '199€', features: ['Clusters illimités', 'Sécurité avancée', 'Private support', 'Tenant isolation'] }
-      ];
-
       return (
         <section style={styles.tablePanel}>
           <div style={styles.panelTitleRow}>
             <h3 style={styles.panelTitle}>Billing & subscriptions</h3>
           </div>
           <div style={styles.pricingCards}>
-            {plans.map((plan) => (
-              <div key={plan.key} style={{ ...styles.priceCard, ...styles.priceCardFeatured }}>
-                <span style={{ ...styles.planBadge, ...styles.planBadgeFeatured }}>{plan.name}</span>
-                <h3 style={styles.planTitle}>{plan.price}<small style={styles.planSmall}>/mo</small></h3>
+            {subscriptionPlans.map((plan) => (
+              <div key={plan.key} style={{ ...styles.priceCard, ...(plan.key === 'scale-up' ? styles.priceCardFeatured : {}) }}>
+                <span style={{ ...styles.planBadge, ...(plan.key === 'scale-up' ? styles.planBadgeFeatured : {}) }}>{plan.emoji} {plan.name}</span>
+                <div>
+                  <del style={{ color: '#94a3b8' }}>{plan.regularPrice} €</del>
+                  <span style={{ color: '#4ade80', fontSize: 12, marginLeft: 8 }}>-{plan.discount}%</span>
+                </div>
+                <h3 style={styles.planTitle}>{plan.price} €<small style={styles.planSmall}>/mois</small></h3>
+                <p style={{ ...styles.muted, margin: 0 }}>{plan.blueprintAccessCount} blueprints accessibles · {plan.audience}</p>
                 <ul style={styles.planList}>
-                  {plan.features.map((feature) => <li key={feature}>{feature}</li>)}
+                  {plan.limits.map((feature) => <li key={feature}>{feature}</li>)}
                 </ul>
-                <button style={styles.primaryButton} onClick={() => handleCheckout(plan.key)}>Choisir</button>
+                <button style={styles.primaryButton} onClick={() => handleCheckout(plan.key)}>Choisir {plan.name}</button>
               </div>
             ))}
           </div>
@@ -1814,6 +1855,8 @@ export default function App() {
     <>
       <Routes>
         <Route path="/" element={user ? <DashboardLayout /> : <PublicLayout />} />
+        <Route path="/app" element={user ? <DashboardLayout /> : <Navigate to="/signup" replace />} />
+        <Route path="/blueprints" element={<BlueprintCatalog />} />
         <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
         <Route path="/signup" element={user ? <Navigate to="/" replace /> : <Signup />} />
         <Route path="/pricing" element={<Pricing />} />
@@ -1886,7 +1929,15 @@ const styles = {
   topbarActions: {
     display: 'flex',
     gap: 10,
-    alignItems: 'center'
+    alignItems: 'center',
+    flexWrap: 'wrap'
+  },
+  publicNavLink: {
+    color: '#cbd5e1',
+    textDecoration: 'none',
+    fontSize: 14,
+    fontWeight: 600,
+    alignSelf: 'center'
   },
   primaryButton: {
     background: 'linear-gradient(135deg, #4cc9f0, #7ae7ff)',
@@ -1940,6 +1991,18 @@ const styles = {
     borderRadius: 10,
     background: 'rgba(127,29,29,0.18)',
     color: '#fecaca'
+  },
+  planNotice: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    flexWrap: 'wrap',
+    padding: 16,
+    borderRadius: 12,
+    background: 'rgba(76,201,240,0.1)',
+    border: '1px solid rgba(122,231,255,0.35)',
+    color: '#f8fafc'
   },
   dangerButton: {
     background: 'rgba(239, 68, 68, 0.12)',
@@ -2071,13 +2134,41 @@ const styles = {
   heroActions: {
     display: 'flex',
     gap: 12,
-    marginBottom: 28
+    marginBottom: 18,
+    flexWrap: 'wrap'
+  },
+  heroBenefits: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 24,
+    color: '#cbd5e1',
+    fontSize: 13,
+    fontWeight: 600
   },
   trustRow: {
     display: 'flex',
     gap: 32,
     flexWrap: 'wrap',
     color: '#cbd5e1'
+  },
+  socialProof: {
+    marginTop: 54,
+    padding: 24,
+    borderRadius: 18,
+    background: 'rgba(15,23,42,0.55)',
+    border: '1px solid rgba(148,163,184,0.15)',
+    color: '#cbd5e1',
+    textAlign: 'center'
+  },
+  socialAudience: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: 32,
+    flexWrap: 'wrap',
+    marginTop: 18,
+    color: '#94a3b8',
+    fontWeight: 700
   },
   heroVisualCard: {
     border: '1px solid rgba(148,163,184,0.2)',
@@ -2168,6 +2259,81 @@ const styles = {
   },
   pricingSection: {
     marginTop: 72
+  },
+  catalogTeaser: {
+    marginTop: 68,
+    padding: 24,
+    borderRadius: 20,
+    background: 'rgba(15,23,42,0.55)',
+    border: '1px solid rgba(148,163,184,0.15)'
+  },
+  catalogTeaserGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 14
+  },
+  teaserCard: {
+    display: 'grid',
+    gap: 9,
+    padding: 18,
+    borderRadius: 14,
+    background: 'rgba(15,23,42,0.88)',
+    border: '1px solid rgba(148,163,184,0.16)',
+    color: '#f8fafc'
+  },
+  catalogSampleGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gap: 12,
+    marginTop: 14
+  },
+  catalogSampleCard: {
+    display: 'grid',
+    gap: 8,
+    padding: 14,
+    borderRadius: 12,
+    background: 'rgba(2,8,23,0.55)',
+    color: '#f8fafc'
+  },
+  muted: { color: '#cbd5e1', lineHeight: 1.65 },
+  recommendedBadge: {
+    alignSelf: 'flex-start',
+    color: '#7ae7ff',
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: '0.1em'
+  },
+  faqSection: {
+    marginTop: 76
+  },
+  faqGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 18,
+    padding: 22,
+    borderRadius: 18,
+    background: 'rgba(15,23,42,0.65)',
+    border: '1px solid rgba(148,163,184,0.15)'
+  },
+  finalCta: {
+    display: 'grid',
+    justifyItems: 'center',
+    gap: 12,
+    marginTop: 38,
+    padding: 30,
+    borderRadius: 18,
+    background: 'rgba(76,201,240,0.08)',
+    border: '1px solid rgba(122,231,255,0.2)',
+    textAlign: 'center'
+  },
+  publicFooter: {
+    display: 'flex',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 12,
+    padding: 24,
+    color: '#94a3b8',
+    fontSize: 13
   },
   sectionHeader: {
     textAlign: 'center',

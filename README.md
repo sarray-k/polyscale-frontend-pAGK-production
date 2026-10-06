@@ -7,6 +7,13 @@ React + Vite frontend for the PolyScale SaaS platform.
 - Connects to the backend through `VITE_API_URL`
 - Cleanly independent from the backend repo
 
+## Parcours public et offres
+- `/` présente la vitrine, les offres et les accès au catalogue et à l’inscription.
+- `/blueprints` expose les 50 fiches publiques avec filtres et aperçus sans compte.
+- `/signup` crée un compte via l’API ; le mode démo utilise le compte de démonstration existant depuis `/login?demo=1`.
+- Les tarifs affichés sont centralisés dans `src/data/plans.js` : Starter 29 €, Scale-up 79 € et Enterprise 169 € par mois, avec leurs prix de référence respectifs.
+- Les montants réellement facturés doivent correspondre à cette grille dans la configuration Stripe du backend ; le frontend ne fixe pas les prix Stripe.
+
 ## Local setup
 ```bash
 npm install
