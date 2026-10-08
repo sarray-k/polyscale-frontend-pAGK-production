@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { plans } from '../data/plans.js';
 
@@ -8,8 +8,10 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 export default function Pricing() {
   const { token } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [status, setStatus] = useState('');
   const [busyPlan, setBusyPlan] = useState('');
+  const [promoCode, setPromoCode] = useState('');
 
   const handleSelectPlan = async (planKey) => {
     if (!token) {
@@ -21,13 +23,18 @@ export default function Pricing() {
     setStatus('');
 
     try {
+      const ref = searchParams.get('ref')?.trim() || '';
       const response = await fetch(`${API_URL}/api/payments/create-checkout-session`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ plan: planKey })
+        body: JSON.stringify({
+          plan: planKey,
+          ...(promoCode.trim() ? { promoCode: promoCode.trim() } : {}),
+          ...(ref ? { ref } : {})
+        })
       });
 
       const data = await response.json().catch(() => ({}));
@@ -51,6 +58,18 @@ export default function Pricing() {
         <span style={styles.eyebrow}>OFFRES POLYSCALE</span>
         <h1 style={styles.title}>Un plan pour chaque étape</h1>
         <p style={styles.description}>Commencez avec Starter et évoluez quand votre projet grandit.</p>
+      </section>
+      <section style={styles.promoSection} aria-label="Code promotionnel">
+        <label htmlFor="promo-code" style={styles.promoLabel}>Vous avez un code promo ?</label>
+        <input
+          id="promo-code"
+          type="text"
+          value={promoCode}
+          onChange={(event) => setPromoCode(event.target.value)}
+          placeholder="PROMO2026"
+          autoComplete="off"
+          style={styles.promoInput}
+        />
       </section>
       <section style={styles.grid}>
         {plans.map((plan) => (
@@ -88,6 +107,9 @@ const styles = {
   eyebrow: { color: '#7ae7ff', fontSize: 12, fontWeight: 700, letterSpacing: '.12em' },
   title: { color: '#f8fafc', fontSize: 'clamp(2rem, 4vw, 3.25rem)', margin: '12px 0' },
   description: { color: '#cbd5e1' },
+  promoSection: { maxWidth: 1100, margin: '0 auto 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, flexWrap: 'wrap' },
+  promoLabel: { color: '#cbd5e1', fontWeight: 700 },
+  promoInput: { width: 180, padding: '10px 12px', border: '1px solid rgba(122,231,255,.45)', borderRadius: 10, background: '#0f172a', color: '#f8fafc', font: 'inherit' },
   grid: { maxWidth: 1100, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 18, alignItems: 'stretch' },
   card: { position: 'relative', display: 'flex', flexDirection: 'column', gap: 15, padding: 24, borderRadius: 18, border: '1px solid rgba(148,163,184,.2)', background: 'rgba(15,23,42,.86)' },
   featured: { borderColor: 'rgba(122,231,255,.6)', boxShadow: '0 18px 35px rgba(76,201,240,.12)' },

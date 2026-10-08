@@ -470,6 +470,14 @@ function DashboardLayout() {
   const [creatingLink, setCreatingLink] = useState(false);
   const [newApp, setNewApp] = useState({ name: '', blueprint: '' });
 
+  const openBlueprintEditor = () => {
+    setActiveView('overview');
+    window.location.hash = 'blueprint-editor';
+    window.requestAnimationFrame(() => {
+      document.getElementById('blueprint-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
   const loadDashboard = async () => {
     if (!token) return;
 
@@ -1720,7 +1728,7 @@ function DashboardLayout() {
             </div>
             <AIAssistant context={assistantContext} />
           </div>
-          <div style={styles.panelBox}>
+          <div id="blueprint-editor" style={styles.panelBox}>
             <div style={styles.panelTitleRow}>
               <h3 style={styles.panelTitle}>Blueprint editor</h3>
             </div>
@@ -1746,7 +1754,7 @@ function DashboardLayout() {
               style={styles.navButton(item.key === activeView)}
               onClick={() => {
                 if (item.key === 'code') {
-                  window.open('/code.html', '_blank', 'noopener,noreferrer');
+                  openBlueprintEditor();
                   return;
                 }
                 setActiveView(item.key);
@@ -2643,7 +2651,8 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '1.4fr 0.6fr',
     gap: 18,
-    marginBottom: 24
+    marginBottom: 24,
+    alignItems: 'start'
   },
   mainPanel: {
     background: 'rgba(15,23,42,0.8)',
@@ -2755,14 +2764,14 @@ const styles = {
   bottomGrid: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
-    gap: 18
+    gap: 18,
+    alignItems: 'start'
   },
   panelBox: {
     background: 'rgba(15,23,42,0.8)',
     border: '1px solid rgba(148,163,184,0.15)',
     borderRadius: 18,
-    padding: 18,
-    minHeight: 220
+    padding: 18
   },
   footerBar: {
     display: 'flex',
