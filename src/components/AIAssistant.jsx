@@ -1,8 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
+import { BlueprintCard, BlueprintGrid, ProgressCard, SiteResult } from './AssistantCards.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const quickPrompts = [
+  'Déploie un blog',
+  'Crée-moi une landing page pour un SaaS de facturation',
+  'Combien d’applications puis-je déployer ?',
   'Crée un blueprint SaaS pour un dashboard B2B avec auth, billing et monitoring.',
   'Quels indicateurs doivent être surveillés pour un cluster de production ?',
   'Propose une architecture multi-tenant sécurisée pour une API de paiement.',
@@ -139,6 +143,15 @@ async function readSse(res, onEvent) {
   }
 }
 
+const toStorable = (history) => history
+  .filter((entry) => entry.card?.kind !== 'progress')
+  .slice(-MAX_STORED_MESSAGES)
+  .map((entry) => (entry.card?.kind === 'site'
+    ? { ...entry, card: { ...entry.card, files: entry.card.files.map((f) => ({ path: f.path })) } }
+    : entry));
+
+let progressCounter = 0;
+
 function loadHistory(storageKey) {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
@@ -149,18 +162,19 @@ function loadHistory(storageKey) {
   return [WELCOME];
 }
 
-export default function AIAssistant({ context = {} }) {
+export default function AIAssistant({ context = {}, onOpenEditor, onOpenDeployments }) {
   const { token, user } = useAuth();
   const storageKey = `polyscale-ai-chat-${user?.id ?? user?.email ?? 'anon'}`;
   const [message, setMessage] = useState('');
   const [history, setHistory] = useState(() => loadHistory(storageKey));
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [deployingId, setDeployingId] = useState(null);
   const endRef = useRef(null);
 
   useEffect(() => {
     try {
-      localStorage.setItem(storageKey, JSON.stringify(history.slice(-MAX_STORED_MESSAGES)));
+      localStorage.setItem(storageKey, JSON.stringify(toStorable(history)));
     } catch {
       // quota dépassé : la conversation reste en mémoire
     }
@@ -198,13 +212,90 @@ export default function AIAssistant({ context = {} }) {
     endRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
   }, [history]);
 
-  const handleSubmit = async (e) => {
+  const authHeaders = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const pushEntry = (entry) => setHistory((prev) => [...prev, entry]);
+
+  const runGeneration = async (params) => {
+    const id = `p${Date.now()}-${progressCounter++}`;
+    pushEntry({ role: 'assistant', text: '', card: { kind: 'progress', id, pct: 0 } });
+    const setPct = (pct) => setHistory((prev) => prev.map((en) => (en.card?.id === id ? { ...en, card: { ...en.card, pct } } : en)));
+    const dropProgress = () => setHistory((prev) => prev.filter((en) => en.card?.id !== id));
+    let pct = 0;
+    const timer = setInterval(() => { pct = Math.min(90, pct + 3); setPct(pct); }, 600);
+    try {
+      const res = await fetch(`${API_URL}/api/code/ai/generate`, { method: 'POST', headers: authHeaders, body: JSON.stringify(params) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'La génération a échoué.');
+      dropProgress();
+      pushEntry({ role: 'assistant', text: `Site généré (${(data.files || []).length} fichier(s)).`, card: { kind: 'site', files: data.files || [], truncated: data.truncated } });
+      window.dispatchEvent(new CustomEvent('polyscale:files-updated'));
+    } catch (error) {
+      dropProgress();
+      pushEntry({ role: 'assistant', text: `❌ ${error.message}` });
+    } finally {
+      clearInterval(timer);
+    }
+  };
+
+  const deployBlueprint = async (data) => {
+    setDeployingId(data.blueprint.id);
+    try {
+      const res = await fetch(`${API_URL}/api/applications`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ name: data.suggestedName, blueprint: data.blueprint.name })
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || 'Le déploiement a échoué.');
+      pushEntry({
+        role: 'assistant',
+        text: result.status === 'demo'
+          ? `✅ « ${data.blueprint.name} » est enregistré en mode démo (aucun cluster Kubernetes joignable). Application : ${result.name}.`
+          : `✅ Déploiement de « ${data.blueprint.name} » lancé sur votre cluster. Application : ${result.name}.`,
+        card: onOpenDeployments ? { kind: 'deployed' } : undefined
+      });
+      window.dispatchEvent(new CustomEvent('polyscale:apps-updated'));
+    } catch (error) {
+      pushEntry({ role: 'assistant', text: `❌ ${error.message}` });
+    } finally {
+      setDeployingId(null);
+    }
+  };
+
+  // Retourne true si le message a été traité (déploiement, génération, liste, plan) ; false pour une question libre
+  const routeIntent = async (text, extra) => {
+    let data;
+    try {
+      const res = await fetch(`${API_URL}/api/ai/ask`, { method: 'POST', headers: authHeaders, body: JSON.stringify({ message: text, intentOnly: true, ...extra }) });
+      if (!res.ok) return false;
+      data = await res.json();
+    } catch {
+      return false;
+    }
+    if (!data || data.type === 'question' || !data.type) return false;
+
+    const reply = data.reply || '';
+    if (data.type === 'blueprint_ready') pushEntry({ role: 'assistant', text: reply, card: { kind: 'blueprint', data } });
+    else if (data.type === 'upgrade') pushEntry({ role: 'assistant', text: reply, card: { kind: 'upgrade', data } });
+    else if (data.type === 'blueprint_list') pushEntry({ role: 'assistant', text: reply, card: { kind: 'grid', blueprints: data.blueprints } });
+    else if (data.type === 'generate_request') {
+      pushEntry({ role: 'assistant', text: reply });
+      await runGeneration(data.params);
+    } else pushEntry({ role: 'assistant', text: reply });
+    return true;
+  };
+
+  const handleSubmit = (e) => {
     e.preventDefault();
-    const trimmed = message.trim();
+    return submit(message);
+  };
+
+  const submit = async (text, extra = {}) => {
+    const trimmed = text.trim();
     if (!trimmed || loading) return;
 
     const previousMessages = history
-      .filter((entry) => entry.text !== WELCOME.text)
+      .filter((entry) => entry.text && entry.text !== WELCOME.text)
       .slice(-10)
       .map((entry) => ({ role: entry.role, content: entry.text.slice(0, 1500) }));
 
@@ -229,6 +320,7 @@ export default function AIAssistant({ context = {} }) {
 
     let streamStarted = false;
     try {
+      if (await routeIntent(trimmed, extra)) return;
       let response = await request('ask-stream');
 
       if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -333,10 +425,22 @@ export default function AIAssistant({ context = {} }) {
               color: '#e2e8f0'
             }}
           >
-            {entry.role === 'assistant' ? <MessageContent text={entry.text} /> : (
+            {entry.role === 'assistant' ? (entry.text ? <MessageContent text={entry.text} /> : null) : (
               <p style={{ whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.6 }}>{entry.text}</p>
             )}
-            {entry.role === 'assistant' && index > 0 && (
+            {entry.card?.kind === 'progress' && <ProgressCard pct={entry.card.pct} />}
+            {entry.card?.kind === 'blueprint' && (
+              <BlueprintCard data={entry.card.data} busy={deployingId === entry.card.data.blueprint.id} onDeploy={deployBlueprint} />
+            )}
+            {entry.card?.kind === 'upgrade' && <BlueprintCard data={entry.card.data} upgrade />}
+            {entry.card?.kind === 'grid' && (
+              <BlueprintGrid blueprints={entry.card.blueprints} disabled={loading} onPick={(bp) => submit(`Déploie ${bp.name}`, { blueprintId: bp.id })} />
+            )}
+            {entry.card?.kind === 'site' && <SiteResult files={entry.card.files} truncated={entry.card.truncated} onOpenEditor={onOpenEditor} />}
+            {entry.card?.kind === 'deployed' && (
+              <button type="button" style={{ ...smallButtonStyle, marginTop: 6 }} onClick={onOpenDeployments}>Voir les déploiements</button>
+            )}
+            {entry.role === 'assistant' && index > 0 && entry.text && (
               <button type="button" onClick={() => copyMessage(entry.text, index)} style={{ ...smallButtonStyle, marginTop: 6 }}>
                 {copiedIndex === index ? 'Copié ✓' : 'Copier'}
               </button>

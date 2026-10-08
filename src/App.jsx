@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 import { useToast } from './context/ToastContext.jsx';
@@ -12,6 +12,7 @@ import BlueprintEditor from './components/BlueprintEditor.jsx';
 import MetricsChart from './components/MetricsChart.jsx';
 import FilterBar, { NoResults, useListFilter } from './components/FilterBar.jsx';
 import AIAssistant from './components/AIAssistant.jsx';
+import SocialGrowth from './components/SocialGrowth.jsx';
 import Help from './components/Help.jsx';
 import BlueprintCatalog from './components/BlueprintCatalog.jsx';
 import { blueprints as publicBlueprints } from './data/blueprints.js';
@@ -467,7 +468,6 @@ function DashboardLayout() {
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
-  const [creatingLink, setCreatingLink] = useState(false);
   const [newApp, setNewApp] = useState({ name: '', blueprint: '' });
 
   const openBlueprintEditor = () => {
@@ -477,6 +477,13 @@ function DashboardLayout() {
       document.getElementById('blueprint-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   };
+
+  const loadDashboardRef = useRef(null);
+  useEffect(() => {
+    const refresh = () => loadDashboardRef.current?.();
+    window.addEventListener('polyscale:apps-updated', refresh);
+    return () => window.removeEventListener('polyscale:apps-updated', refresh);
+  }, []);
 
   const loadDashboard = async () => {
     if (!token) return;
@@ -605,32 +612,7 @@ function DashboardLayout() {
     }
   };
 
-  const handleCreateSocialLink = async () => {
-    setCreatingLink(true);
-
-    try {
-      const response = await fetch(`${API_URL}/api/social/links`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ source: 'dashboard', campaign: 'polyscale', target: '/' })
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Impossible de créer le lien social');
-      }
-
-      await loadDashboard();
-    } catch (error) {
-      showToast(error.message || 'Impossible de créer le lien social', 'error');
-    } finally {
-      setCreatingLink(false);
-    }
-  };
+  loadDashboardRef.current = loadDashboard;
 
   const handleUseTemplate = async (templateId) => {
     try {
@@ -822,7 +804,7 @@ function DashboardLayout() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ plan })
+        body: JSON.stringify({ plan, ref: localStorage.getItem('ps_ref') || undefined })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Impossible de démarrer le paiement');
@@ -1264,62 +1246,7 @@ function DashboardLayout() {
     }
 
     if (activeView === 'social') {
-      return (
-        <section style={styles.tablePanel}>
-          <div style={styles.panelTitleRow}>
-            <h3 style={styles.panelTitle}>Social growth</h3>
-            <button style={styles.secondaryButton} onClick={handleCreateSocialLink} disabled={creatingLink}>
-              {creatingLink ? 'Création...' : 'Créer un lien'}
-            </button>
-          </div>
-
-          <div style={styles.kpiGrid}>
-            <div style={styles.kpiCard}>
-              <span style={styles.kpiLabel}>Liens</span>
-              <strong style={styles.kpiValue}>{socialStats.totalLinks || 0}</strong>
-            </div>
-            <div style={styles.kpiCard}>
-              <span style={styles.kpiLabel}>Clicks</span>
-              <strong style={styles.kpiValue}>{socialStats.totalClicks || 0}</strong>
-            </div>
-            <div style={styles.kpiCard}>
-              <span style={styles.kpiLabel}>Conversions</span>
-              <strong style={styles.kpiValue}>{socialStats.totalConversions || 0}</strong>
-            </div>
-            <div style={styles.kpiCard}>
-              <span style={styles.kpiLabel}>Reward estimé</span>
-              <strong style={styles.kpiValue}>{socialStats.estimatedReward || 0}</strong>
-            </div>
-          </div>
-
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Code</th>
-                <th style={styles.th}>Source</th>
-                <th style={styles.th}>URL</th>
-                <th style={styles.th}>Clicks</th>
-                <th style={styles.th}>Ciblé</th>
-              </tr>
-            </thead>
-            <tbody>
-              {socialLinks.length ? socialLinks.map((link) => (
-                <tr key={link.id || link.code}>
-                  <td style={styles.td}>{link.code}</td>
-                  <td style={styles.td}>{link.source || 'generic'}</td>
-                  <td style={styles.td}><a href={link.url || '#'} target="_blank" rel="noreferrer" style={{ color: '#7ae7ff' }}>{link.url || '—'}</a></td>
-                  <td style={styles.td}>{link.clicks || 0}</td>
-                  <td style={styles.td}>{link.target || '/'}</td>
-                </tr>
-              )) : (
-                <tr>
-                  <td colSpan="5" style={{ ...styles.td, color: '#94a3b8' }}>Aucun lien social créé pour le moment.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
-      );
+      return <SocialGrowth token={token} apiUrl={API_URL} />;
     }
 
     if (activeView === 'templates') {
@@ -1726,7 +1653,11 @@ function DashboardLayout() {
             <div style={styles.panelTitleRow}>
               <h3 style={styles.panelTitle}>AI assistant</h3>
             </div>
-            <AIAssistant context={assistantContext} />
+            <AIAssistant
+              context={assistantContext}
+              onOpenEditor={openBlueprintEditor}
+              onOpenDeployments={() => setActiveView('deployments')}
+            />
           </div>
           <div id="blueprint-editor" style={styles.panelBox}>
             <div style={styles.panelTitleRow}>

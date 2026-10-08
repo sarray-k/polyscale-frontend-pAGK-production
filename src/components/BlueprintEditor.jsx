@@ -111,6 +111,13 @@ export default function BlueprintEditor({ onBlueprintCreated }) {
     fetchFiles();
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return undefined;
+    const refresh = () => fetchFiles();
+    window.addEventListener('polyscale:files-updated', refresh);
+    return () => window.removeEventListener('polyscale:files-updated', refresh);
+  }, [token]);
+
   const fetchFiles = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
